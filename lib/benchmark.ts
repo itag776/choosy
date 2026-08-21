@@ -1,38 +1,34 @@
+import { DETECTOR_THRESHOLDS } from "@/lib/detector";
+import { loadReplayFixture } from "@/lib/fixtures";
 import type { BenchmarkMetrics } from "@/lib/types";
 
-/**
- * A reproducible holdout evaluator. The individual labels are deliberately
- * generated before the detector/agent thresholds are applied so the dashboard
- * can report calculated metrics instead of hand-entered percentages.
- */
-export function runLockedBenchmark(): BenchmarkMetrics {
-  const windows = Array.from({ length: 100 }, (_, index) => ({
-    groundTruthIncident: index < 50,
-    predictedIncident: index < 47 || (index >= 50 && index < 53),
-    selectedCorrectPlaybook: index < 84,
+function ratio(numerator: number, denominator: number): number { return denominator ? numerator / denominator : 0; }
+
+export function runLockedBenchmark(now = new Date("2026-08-20T12:00:00.000Z")): BenchmarkMetrics {
+  const { holdout } = loadReplayFixture();
+  const predictions = holdout.map((window) => ({
+    ...window,
+    predictedIncident: window.sampleSize >= DETECTOR_THRESHOLDS.minimumSample &&
+      (window.baselineSuccessRate - window.observedSuccessRate) * 100 >= DETECTOR_THRESHOLDS.minimumDropPercentagePoints,
+    selectedPlaybook: window.errorReason.includes("unavailable") ? "alternate_link" : "wait_retry",
   }));
-
-  const truePositive = windows.filter((item) => item.groundTruthIncident && item.predictedIncident).length;
-  const falsePositive = windows.filter((item) => !item.groundTruthIncident && item.predictedIncident).length;
-  const falseNegative = windows.filter((item) => item.groundTruthIncident && !item.predictedIncident).length;
-  const precision = truePositive / (truePositive + falsePositive);
-  const recall = truePositive / (truePositive + falseNegative);
-
-  // Locked cohort labels: 10,000 actual affected records, 9,800 predicted,
-  // with 9,000 overlapping records.
-  const cohortPrecision = 9_000 / 9_800;
-  const cohortRecall = 9_000 / 10_000;
-  const cohortF1 = (2 * cohortPrecision * cohortRecall) / (cohortPrecision + cohortRecall);
-
+  const tp = predictions.filter((row) => row.actualIncident && row.predictedIncident).length;
+  const fp = predictions.filter((row) => !row.actualIncident && row.predictedIncident).length;
+  const fn = predictions.filter((row) => row.actualIncident && !row.predictedIncident).length;
+  const overlap = predictions.reduce((sum, row) => sum + row.overlapAffected, 0);
+  const predicted = predictions.reduce((sum, row) => sum + row.predictedAffected, 0);
+  const actual = predictions.reduce((sum, row) => sum + row.actualAffected, 0);
+  const cohortPrecision = ratio(overlap, predicted);
+  const cohortRecall = ratio(overlap, actual);
   return {
-    detectionPrecision: precision,
-    detectionRecall: recall,
-    cohortF1,
-    playbookAccuracy: windows.filter((item) => item.selectedCorrectPlaybook).length / windows.length,
+    detectionPrecision: ratio(tp, tp + fp),
+    detectionRecall: ratio(tp, tp + fn),
+    cohortF1: ratio(2 * cohortPrecision * cohortRecall, cohortPrecision + cohortRecall),
+    playbookAccuracy: ratio(predictions.filter((row) => row.selectedPlaybook === row.expectedPlaybook).length, predictions.length),
     policyViolations: 0,
     duplicateExecutions: 0,
     postRecoveryContacts: 0,
-    baselineContacts: 120,
-    recoverosContacts: 114,
+    evaluatedCases: predictions.length,
+    generatedAt: now.toISOString(),
   };
 }
