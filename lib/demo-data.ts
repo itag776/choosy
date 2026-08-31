@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { runLockedBenchmark } from "@/lib/benchmark";
 import { loadReplayFixture } from "@/lib/fixtures";
 import type { AuditEvent, StoredRecoveryRun } from "@/lib/types";
@@ -6,19 +6,42 @@ import type { AuditEvent, StoredRecoveryRun } from "@/lib/types";
 export const DEFAULT_RUN_ID = "run_canary_commander";
 export const DEFAULT_MERCHANT_ID = "merchant_demo";
 
-export function createAuditEvent(run: Pick<StoredRecoveryRun, "audit">, input: Omit<AuditEvent, "id" | "sequence" | "createdAt">, now = new Date()): AuditEvent {
-  return { ...input, id: randomUUID(), sequence: (run.audit.at(-1)?.sequence ?? 0) + 1, createdAt: now.toISOString() };
+function stableJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  if (value && typeof value === "object") {
+    return `{${Object.entries(value as Record<string, unknown>).sort(([a], [b]) => a.localeCompare(b)).map(([key, item]) => `${JSON.stringify(key)}:${stableJson(item)}`).join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "null";
 }
 
-export function createInitialRun(now = new Date()): StoredRecoveryRun {
+export function createAuditEvent(run: Pick<StoredRecoveryRun, "audit">, input: Omit<AuditEvent, "id" | "sequence" | "createdAt" | "previousHash" | "hash">, now = new Date()): AuditEvent {
+  const event = {
+    ...input,
+    id: randomUUID(),
+    sequence: (run.audit.at(-1)?.sequence ?? 0) + 1,
+    previousHash: run.audit.at(-1)?.hash ?? "GENESIS",
+    createdAt: now.toISOString(),
+  };
+  return { ...event, hash: createHash("sha256").update(stableJson(event)).digest("hex") };
+}
+
+export function verifyAuditChain(events: AuditEvent[]): boolean {
+  return events.every((event, index) => {
+    const { hash, ...unsigned } = event;
+    const previousHash = index === 0 ? "GENESIS" : events[index - 1]!.hash;
+    return event.previousHash === previousHash && createHash("sha256").update(stableJson(unsigned)).digest("hex") === hash;
+  });
+}
+
+export function createInitialRun(now = new Date(), runId = DEFAULT_RUN_ID): StoredRecoveryRun {
   const fixture = loadReplayFixture();
   const createdAt = now.toISOString();
   const base: StoredRecoveryRun = {
-    id: DEFAULT_RUN_ID, merchantId: DEFAULT_MERCHANT_ID, phase: "idle", cycle: 1, version: 1,
+    id: runId, merchantId: DEFAULT_MERCHANT_ID, phase: "idle", cycle: 1, version: 1,
     fixtureVersion: fixture.manifest.version, incident: null, investigation: null,
     policyDecision: null, canaryAssignments: [], canary: null, promotion: null, externalAction: null,
-    ledger: { simulatedAmountPaise: 0, baselineAmountPaise: 0, razorpayTestAmountPaise: 0, simulatedCases: 0, baselineCases: 0, testModeCases: 0, simulatedContacts: 0, baselineContacts: 0 },
-    metrics: runLockedBenchmark(), audit: [], commandReceipts: [], payments: [], processedWebhookIds: [],
+    ledger: { simulatedAmountPaise: 0, baselineAmountPaise: 0, razorpayTestAmountPaise: 0, simulatedCases: 0, baselineCases: 0, testModeCases: 0, simulatedContacts: 0, baselineContacts: 0 }, campaignEvents: [],
+    metrics: runLockedBenchmark(), audit: [], approvals: [], commandReceipts: [], payments: [], processedWebhookIds: [],
     integration: {
       openai: Boolean(process.env.OPENAI_API_KEY),
       razorpay: Boolean(process.env.RAZORPAY_KEY_ID && process.env.RAZORPAY_KEY_SECRET),
@@ -30,7 +53,7 @@ export function createInitialRun(now = new Date()): StoredRecoveryRun {
   };
   base.audit.push(createAuditEvent(base, {
     kind: "demo", title: "Recovery control plane ready",
-    detail: "Immutable replay fixture verified. Synthetic replay and Razorpay Test Mode ledgers are isolated.",
+    detail: "Hash-verified replay fixture loaded. Synthetic replay and Razorpay Test Mode ledgers are isolated.",
     actor: "system", status: "success",
     evidence: { manifestHash: base.dataset.manifestHash, fixtureVersion: base.fixtureVersion },
   }, now));

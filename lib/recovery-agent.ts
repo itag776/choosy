@@ -157,9 +157,9 @@ export function fallbackPromotion(canary: CanaryResult): PromotionRecommendation
       `${challenger.recovered}/${challenger.attempted} recovered for ${challenger.playbookId}.`,
     ],
     reason: "Promote the measured winner while preserving approval and stop conditions.",
-    uncertainty: canary.confidenceWarning,
+    uncertainty: canary.sampleWarning,
     stoppingConditions: ["Stop after payment capture", "Stop on any policy violation", "Escalate if provider state cannot be reconciled"],
-    toolEvents: [{ name: "getCanaryResults", status: "completed", summary: "Persisted immutable assignments and outcomes read." }],
+    toolEvents: [{ name: "getCanaryResults", status: "completed", summary: "Persisted assignments and measured replay outcomes read." }],
     semanticValidation: "fallback",
   };
 }

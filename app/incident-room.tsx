@@ -8,10 +8,9 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import type {
-  AuditEvent, CandidatePlaybook, RecoveryRunSnapshot, RunCommand, RunPhase,
+  AuditEvent, CandidatePlaybook, OperatorIdentity, RecoveryRunSnapshot, RunCommand, RunPhase,
 } from "@/lib/types";
 
-const RUN_ID = "run_canary_commander";
 const transitional = new Set<RunPhase>([
   "incident_streaming", "investigating", "canary_running", "evaluating_promotion", "payment_link_creating",
 ]);
@@ -19,9 +18,9 @@ const transitional = new Set<RunPhase>([
 const chapters: Array<{ label: string; phases: RunPhase[] }> = [
   { label: "Observe", phases: ["idle", "incident_streaming", "incident_detected"] },
   { label: "Investigate", phases: ["investigating", "awaiting_canary_approval"] },
-  { label: "Experiment", phases: ["canary_approved", "canary_running", "canary_complete"] },
-  { label: "Decide", phases: ["evaluating_promotion", "awaiting_promotion_approval", "promoted"] },
-  { label: "Prove", phases: ["payment_link_creating", "payment_link_created", "test_payment_captured", "completed"] },
+  { label: "Experiment", phases: ["canary_approved", "canary_running", "canary_complete", "rejected"] },
+  { label: "Decide", phases: ["evaluating_promotion", "awaiting_promotion_approval", "promoted", "stopped", "escalated"] },
+  { label: "Prove", phases: ["payment_link_creating", "payment_link_created", "test_payment_captured", "completed", "integration_failure"] },
 ];
 
 function formatInr(paise: number): string {
@@ -37,7 +36,7 @@ type PrimaryAction = { command: RunCommand; label: string; hint: string; icon: t
 
 function primaryAction(state: RecoveryRunSnapshot): PrimaryAction | null {
   switch (state.phase) {
-    case "idle": return { command: "inject_incident", label: "Inject replay incident", hint: "Stream the signed fixture into the detector", icon: Play };
+    case "idle": return { command: "inject_incident", label: "Inject replay incident", hint: "Stream the hash-verified fixture into the detector", icon: Play };
     case "incident_detected": return { command: "investigate", label: "Deploy Incident Commander", hint: "Require five typed evidence reads", icon: Bot };
     case "awaiting_canary_approval": return { command: "approve_canary", label: "Approve 12-case canary", hint: "Authorize a replay-only 6 × 6 experiment", icon: LockKeyhole };
     case "canary_approved": return { command: "run_canary", label: "Run randomized canary", hint: "Commit assignments before reading outcomes", icon: FlaskConical };
@@ -59,15 +58,15 @@ function primaryAction(state: RecoveryRunSnapshot): PrimaryAction | null {
   }
 }
 
-export default function IncidentRoom({ initialState }: { initialState: RecoveryRunSnapshot }) {
+export default function IncidentRoom({ initialState, operator }: { initialState: RecoveryRunSnapshot; operator: OperatorIdentity }) {
   const [state, setState] = useState(initialState);
   const [busy, setBusy] = useState<RunCommand | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
-    const response = await fetch(`/api/runs/${RUN_ID}`, { cache: "no-store" });
+    const response = await fetch(`/api/runs/${initialState.id}`, { cache: "no-store" });
     if (response.ok) setState(await response.json() as RecoveryRunSnapshot);
-  }, []);
+  }, [initialState.id]);
 
   useEffect(() => {
     const interval = window.setInterval(() => void load(), transitional.has(state.phase) ? 750 : 2_000);
@@ -78,7 +77,7 @@ export default function IncidentRoom({ initialState }: { initialState: RecoveryR
     setBusy(command);
     setError(null);
     try {
-      const response = await fetch(`/api/runs/${RUN_ID}/commands`, {
+      const response = await fetch(`/api/runs/${initialState.id}/commands`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -99,7 +98,12 @@ export default function IncidentRoom({ initialState }: { initialState: RecoveryR
     } finally {
       setBusy(null);
     }
-  }, [load, state.version]);
+  }, [initialState.id, load, state.version]);
+
+  const logout = useCallback(async () => {
+    await fetch("/api/auth/logout", { method: "POST" });
+    window.location.reload();
+  }, []);
 
   const action = primaryAction(state);
   const activeChapter = Math.max(0, chapters.findIndex((chapter) => chapter.phases.includes(state.phase)));
@@ -113,6 +117,8 @@ export default function IncidentRoom({ initialState }: { initialState: RecoveryR
         <div className="environment">
           <span className="env-pill"><FlaskConical size={12} /> REPLAY + TEST MODE</span>
           <span className="pulse-dot" />{state.integration.persistence === "supabase" ? "SUPABASE DURABLE" : "LOCAL DURABLE PREVIEW"}
+          <span className="operator-pill"><ShieldCheck size={11}/>{operator.actorId}</span>
+          <button className="reset-control" onClick={() => void logout()} aria-label="End authenticated operator session">LOG OUT</button>
           {state.phase !== "idle" && <button className="reset-control" onClick={() => void perform("reset_replay")} disabled={busy !== null} aria-label="Reset replay to calm baseline"><RotateCcw size={12} /> RESET</button>}
         </div>
       </header>
@@ -179,7 +185,7 @@ function CalmScene({ state }: { state: RecoveryRunSnapshot }) {
       <div className="calm-copy"><span className="status-line"><i /> PAYMENT SYSTEM NOMINAL</span><h1>Quiet systems.<br/><em>Ready judgment.</em></h1><p>RecoverOS watches payment health, isolates revenue at risk, and tests recovery actions before any campaign earns permission to expand.</p></div>
       <div className="baseline-orbit"><span>SUCCESS RATE / 15 MIN</span><strong>96.4<sup>%</sup></strong><div className="baseline-bars">{[62,68,66,72,70,76,74,79,73,77,75,78].map((height, index)=><i key={index} style={{height:`${height}%`}} />)}</div><small>TRAILING BASELINE · NO ACTIVE INCIDENT</small></div>
     </div>
-    <div className="truth-ribbon"><Metric label="Replay records" value={String(state.dataset.totalAttempts)} detail="SIGNED MANIFEST" /><Metric label="Locked holdout" value={`${state.dataset.holdoutPercent}%`} detail="NOT UI-TUNED" /><Metric label="Policy violations" value="0" detail="RELEASE GATE" /><Metric label="Live actions" value="0" detail="HUMAN GATED" /></div>
+    <div className="truth-ribbon"><Metric label="Replay records" value={String(state.dataset.totalAttempts)} detail="SHA-256 MANIFEST" /><Metric label="Adversarial eval" value={String(state.metrics.evaluatedCases)} detail="GENERATED CASES" /><Metric label="Policy violations" value={String(state.metrics.policyViolations)} detail={`${state.metrics.safetyCases} ATTACKS`} /><Metric label="Live actions" value="0" detail="HUMAN GATED" /></div>
   </div>;
 }
 
@@ -203,7 +209,7 @@ function IncidentScene({ state }: { state: RecoveryRunSnapshot }) {
       <div><span className="status-line danger"><i /> REVENUE EXPOSURE ACTIVE</span><h1>{incident.title}</h1><p>{incident.affectedAttempts} failed payments isolated across one shared issuer-authentication path.</p></div>
       <div className="failure-rate"><span>OBSERVED SUCCESS</span><strong>{percent(incident.observedSuccessRate)}</strong><small>−{incident.deltaPercentagePoints.toFixed(1)} PP</small></div>
     </div>
-    <div className="incident-metrics"><Metric label="Revenue at risk" value={formatInr(incident.revenueAtRiskPaise)} detail="SYNTHETIC REPLAY" danger/><Metric label="Affected cohort" value={String(incident.affectedAttempts)} detail="PAYMENTS"/><Metric label="Confidence" value={percent(incident.confidence)} detail="DETERMINISTIC"/><Metric label="Minimum sample" value={String(incident.thresholds.minimumSample)} detail="FIXED THRESHOLD"/></div>
+    <div className="incident-metrics"><Metric label="Revenue at risk" value={formatInr(incident.revenueAtRiskPaise)} detail="SYNTHETIC REPLAY" danger/><Metric label="Affected cohort" value={String(incident.affectedAttempts)} detail="PAYMENTS"/><Metric label="Incident score" value={percent(incident.incidentScore)} detail="HEURISTIC, NOT PROBABILITY"/><Metric label="Minimum sample" value={String(incident.thresholds.minimumSample)} detail="FIXED THRESHOLD"/></div>
     <div className="cohort-proof"><span>COHORT QUERY</span><code>{incident.cohortQuery}</code><div>{incident.competingHypotheses.map(item=><p key={item.id} className={item.disposition}><b>{item.disposition==="supported"?"SUPPORTED":"REJECTED"}</b>{item.label}<em>{percent(item.support)}</em></p>)}</div></div>
   </div>;
 }
@@ -218,7 +224,7 @@ function InvestigatingScene() {
 }
 
 function PlaybookCard({ playbook, index }: { playbook: CandidatePlaybook; index: number }) {
-  return <article className="playbook-card"><div><span>STRATEGY {index===0?"A":"B"}</span><em>NOT YET RANKED</em></div><h3>{playbook.name}</h3><p>{playbook.rationale}</p><div className="method-tags">{playbook.enabledMethods.map(method=><span key={method}>{method}</span>)}</div><footer><span>{playbook.timingMinutes ? `WAIT ${playbook.timingMinutes} MIN` : "IMMEDIATE"}</span><b>AMOUNT IMMUTABLE</b></footer></article>;
+  return <article className="playbook-card"><div><span>STRATEGY {index===0?"A":"B"}</span><em>NOT YET RANKED</em></div><h3>{playbook.name}</h3><p>{playbook.rationale}</p><div className="method-tags">{playbook.enabledMethods.map(method=><span key={method}>{method}</span>)}</div><footer><span>{playbook.timingMinutes ? `WAIT ${playbook.timingMinutes} MIN` : "IMMEDIATE"}</span><b>ORIGINAL AMOUNT ONLY</b></footer></article>;
 }
 
 function StrategyScene({ state }: { state: RecoveryRunSnapshot }) {
@@ -244,7 +250,7 @@ function ApprovedScene({ state }: { state: RecoveryRunSnapshot }) {
 
 function CanaryRunningScene({ state }: { state: RecoveryRunSnapshot }) {
   return <div className="scene canary-running-scene">
-    <SceneKicker index="06" label="RANDOMIZED CANARY" provenance="OUTCOMES SEALED" />
+    <SceneKicker index="06" label="RANDOMIZED CANARY" provenance="OUTCOME FILE HASHED" />
     <div className="canary-title"><div><span className="status-line"><i/> EXPERIMENT RUNNING</span><h1>Assignments committed.</h1></div><LoaderCircle className="spin" size={28}/></div>
     <div className="assignment-grid">{state.canaryAssignments.map(assignment=><div key={assignment.caseId} className={assignment.playbookId}><span>{assignment.ordinal}</span><b>{assignment.playbookId==="wait_retry"?"A":"B"}</b><code>{assignment.caseId.replace("pay_replay_","PAY-")}</code></div>)}</div>
     <p className="seal-note"><LockKeyhole size={14}/> Outcome rows are read only after this assignment set is persisted.</p>
@@ -258,7 +264,7 @@ function CanaryResultScene({ state }: { state: RecoveryRunSnapshot }) {
   const evaluating=state.phase==="evaluating_promotion";
   return <div className="scene result-scene">
     <SceneKicker index="07" label="PROMOTION DECISION" provenance="MEASURED CANARY" />
-    <div className="result-head"><div><span className="status-line"><i/> DIRECTIONAL RESULT</span><h1><em>{canary.liftMultiple.toFixed(1)}×</em> recovery advantage.</h1><p>{canary.confidenceWarning}</p></div>{evaluating&&<div className="agent-evaluating"><LoaderCircle className="spin" size={18}/><span>Agent evaluating<br/>stop conditions</span></div>}</div>
+    <div className="result-head"><div><span className="status-line"><i/> DIRECTIONAL RESULT</span><h1><em>{canary.liftMultiple.toFixed(1)}×</em> recovery advantage.</h1><p>{canary.sampleWarning}</p></div>{evaluating&&<div className="agent-evaluating"><LoaderCircle className="spin" size={18}/><span>Agent evaluating<br/>stop conditions</span></div>}</div>
     <div className="race">
       <ResultLane label="A" title="Timed issuer retry" result={wait.recovered} total={wait.attempted} rate={wait.conversionRate}/>
       <ResultLane label="B" title="Alternate-method link" result={alternate.recovered} total={alternate.attempted} rate={alternate.conversionRate} winner/>
@@ -283,7 +289,7 @@ function ProofScene({ state }: { state: RecoveryRunSnapshot }) {
       <i/>
       <div><span>RAZORPAY TEST MODE</span><strong>{formatInr(state.ledger.razorpayTestAmountPaise)}</strong><small>{state.ledger.testModeCases} sandbox captures</small></div>
     </div>
-    {action?<div className={failed?"external-proof failed":"external-proof"}><div><span>REFERENCE ID</span><code>{action.referenceId}</code></div><div><span>IMMUTABLE AMOUNT</span><b>{formatInr(action.amountPaise)}</b></div><div><span>PROVIDER STATE</span><b>{action.providerStatus??action.status}</b></div>{action.shortUrl&&<a href={action.shortUrl} target="_blank" rel="noreferrer">OPEN RAZORPAY LINK <ExternalLink size={14}/></a>}{action.failureReason&&<p><TriangleAlert size={14}/>{action.failureReason}</p>}</div>:<div className="external-empty"><Database size={18}/><span>No provider call yet. The next action first persists a stable reference and request digest.</span></div>}
+    {action?<div className={failed?"external-proof failed":"external-proof"}><div><span>REFERENCE ID</span><code>{action.referenceId}</code></div><div><span>POLICY-LOCKED AMOUNT</span><b>{formatInr(action.amountPaise)}</b></div><div><span>PROVIDER STATE</span><b>{action.providerStatus??action.status}</b></div>{action.shortUrl&&<a href={action.shortUrl} target="_blank" rel="noreferrer">OPEN RAZORPAY LINK <ExternalLink size={14}/></a>}{action.failureReason&&<p><TriangleAlert size={14}/>{action.failureReason}</p>}</div>:<div className="external-empty"><Database size={18}/><span>No provider call yet. The next action first persists a stable reference and request digest.</span></div>}
   </div>;
 }
 
@@ -293,7 +299,7 @@ function FinalScene({ state }: { state: RecoveryRunSnapshot }) {
     <SceneKicker index="09" label="INCIDENT CLOSED" provenance="EVIDENCE COMPLETE" />
     <div className="final-title"><span className="success-seal"><Check size={26}/></span><div><span className="status-line"><i/> PAYMENT CAPTURED · CONTACTS STOPPED</span><h1>Recovery proven.<br/><em>Claims bounded.</em></h1></div></div>
     <div className="final-ledgers"><Metric label="Recovered in deterministic replay" value={formatInr(state.ledger.simulatedAmountPaise)} detail={`+${Math.round(uplift*100)}% VS BASELINE`}/><Metric label="Razorpay Test Mode recovered" value={formatInr(state.ledger.razorpayTestAmountPaise)} detail="SANDBOX ONLY"/><Metric label="Policy violations" value="0" detail="ALL GATES PASSED"/><Metric label="Duplicate executions" value="0" detail={state.phase==="completed"?"REPLAY VERIFIED":"READY TO VERIFY"}/></div>
-    <div className="evidence-checks">{["Immutable fixture + manifest hash","Two human approval gates","Real provider reference + signed webhook","Monotonic paid state + stop-on-capture"].map(item=><span key={item}><BadgeCheck size={14}/>{item}</span>)}</div>
+    <div className="evidence-checks">{["Fixture hash verified before replay","Authenticated, digest-bound approval receipts","Exact provider reference + verified webhook HMAC","Monotonic paid state + stop-on-capture"].map(item=><span key={item}><BadgeCheck size={14}/>{item}</span>)}</div>
   </div>;
 }
 
@@ -307,14 +313,14 @@ function DecisionRail({state,action,busy,perform}:{state:RecoveryRunSnapshot;act
   return <aside className="decision-rail">
     <div className="queue-header"><span><Radio size={12}/> OPERATOR QUEUE</span><b>{action?"1 ACTION":"MONITORING"}</b></div>
     <div className="decision-copy"><small>NEXT CONTROLLED STEP</small><h2>{action?.label??"System is processing"}</h2><p>{action?.hint??"No operator input is required while deterministic work completes."}</p></div>
-    {action&&<button className="primary-command" disabled={Boolean(busy)} onClick={()=>void perform(action.command)}>{busy?<LoaderCircle className="spin" size={17}/>:<ActionIcon size={17}/>}<span>{busy?"Command in progress":action.label}</span><ArrowRight size={16}/></button>}
+    {action&&<button className="primary-command" disabled={Boolean(busy)} onClick={()=>void perform(action.command, action.command==="approve_canary"||action.command==="approve_promotion"?{reason:"Authenticated operator reviewed the displayed evidence and authorized this bounded step."}:undefined)}>{busy?<LoaderCircle className="spin" size={17}/>:<ActionIcon size={17}/>}<span>{busy?"Command in progress":action.label}</span><ArrowRight size={16}/></button>}
     {state.phase==="awaiting_canary_approval"&&<button className="reject-command" disabled={Boolean(busy)} onClick={()=>void perform("reject_canary")}><Ban size={14}/>Reject canary</button>}
     <div className="guardrail"><ShieldCheck size={15}/><span>Deterministic policy owns permission. The agent owns interpretation and recommendation.</span></div>
 
     <section className="rail-section">
       <header><span>CONTROL BOUNDARY</span><b>{state.policyDecision?.outcome.replaceAll("_"," ").toUpperCase()??"STANDBY"}</b></header>
       <div className="rail-rules">
-        <RailRule label="Amount integrity" value="IMMUTABLE" ok/>
+        <RailRule label="Amount integrity" value="POLICY LOCKED" ok/>
         <RailRule label="Eligible cases" value={eligible?String(eligible):"—"} ok={eligible>0||!state.incident}/>
         <RailRule label="Contact limit" value="≤ 2 / 24H" ok/>
         <RailRule label="Stop on capture" value="TERMINAL" ok/>
@@ -340,10 +346,10 @@ function Integration({label,active}:{label:string;active:boolean}) {
 
 function EvidenceDrawer({state}:{state:RecoveryRunSnapshot}) {
   return <details className="evidence-drawer" open>
-    <summary><div><Clock3 size={14}/><span>IMMUTABLE EVIDENCE TRAIL</span><b>{state.audit.length} EVENTS</b></div><div><code>{state.dataset.manifestHash.slice(0,16)}</code><ChevronDown size={15}/></div></summary>
+    <summary><div><Clock3 size={14}/><span>HASH-CHAINED EVIDENCE TRAIL</span><b>{state.audit.length} EVENTS · {state.approvals.length} APPROVALS</b></div><div><code>{state.audit.at(-1)?.hash.slice(0,16)??state.dataset.manifestHash.slice(0,16)}</code><ChevronDown size={15}/></div></summary>
     <div className="drawer-grid">
       <div className="audit-stream">{state.audit.slice(-8).reverse().map(event=><AuditRow key={event.id} event={event}/>)}</div>
-      <div className="evaluation-proof"><span>LOCKED HOLDOUT</span><div><Metric label="Precision" value={percent(state.metrics.detectionPrecision)} detail="DETECTOR"/><Metric label="Recall" value={percent(state.metrics.detectionRecall)} detail="DETECTOR"/><Metric label="Cohort F1" value={percent(state.metrics.cohortF1)} detail="SEGMENT"/><Metric label="Selection" value={percent(state.metrics.playbookAccuracy)} detail="PLAYBOOK"/></div><p><FileCheck2 size={14}/> {state.metrics.evaluatedCases} versioned cases · seed {state.dataset.seed} · fixture {state.fixtureVersion}</p></div>
+      <div className="evaluation-proof"><span>ADVERSARIAL EVALUATION · 95% WILSON INTERVALS</span><div><Metric label="Precision" value={percent(state.metrics.detectionPrecision)} detail="PIPELINE"/><Metric label="Recall" value={percent(state.metrics.detectionRecall)} detail="PIPELINE"/><Metric label="Cohort F1" value={percent(state.metrics.cohortF1)} detail="SEGMENT"/><Metric label="Selection" value={percent(state.metrics.playbookAccuracy)} detail="POLICY"/></div><p><FileCheck2 size={14}/> {state.metrics.evaluatedCases} scenario windows · {state.metrics.safetyCases} adversarial safety cases · {state.metrics.datasetHash.slice(0,12)}</p></div>
     </div>
   </details>;
 }

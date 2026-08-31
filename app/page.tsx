@@ -1,10 +1,14 @@
 import IncidentRoom from "@/app/incident-room";
-import { DEFAULT_RUN_ID } from "@/lib/demo-data";
+import OperatorLogin from "@/app/operator-login";
 import { getRun } from "@/lib/run-service";
+import { authIsConfigured } from "@/lib/operator-auth";
+import { getOperatorSession } from "@/lib/operator-session";
 
 export const dynamic = "force-dynamic";
 
 export default async function Page() {
-  const initialState = await getRun(DEFAULT_RUN_ID);
-  return <IncidentRoom initialState={initialState} />;
+  const operator = await getOperatorSession();
+  if (!operator) return <OperatorLogin productionReady={authIsConfigured()} />;
+  const initialState = await getRun(operator.runId);
+  return <IncidentRoom initialState={initialState} operator={operator} />;
 }

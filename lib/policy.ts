@@ -1,4 +1,4 @@
-import type { CandidatePlaybook, IncidentEvidence, PaymentAttempt, PolicyDecision } from "@/lib/types";
+import type { CandidatePlaybook, IncidentEvidence, PaymentAttempt, PlaybookId, PolicyDecision } from "@/lib/types";
 
 export const MERCHANT_POLICY = `
 Never change the amount of a recovery payment.
@@ -13,6 +13,13 @@ export const AVAILABLE_ACTIONS = [
   { id: "retry_original", methods: ["card"], bounded: true },
   { id: "payment_link", methods: ["card", "upi", "netbanking"], bounded: true },
 ] as const;
+
+export function selectRecoveryPlaybook(incident: IncidentEvidence): PlaybookId {
+  const reason = incident.cohort.errorReason.toLowerCase();
+  if (incident.cohort.method !== "card") return "alternate_link";
+  if (reason.includes("timeout") || reason.includes("rate_limit") || reason.includes("temporary")) return "wait_retry";
+  return "alternate_link";
+}
 
 export function eligibleCases(payments: PaymentAttempt[], incident?: IncidentEvidence | null): PaymentAttempt[] {
   return payments.filter((payment) => {
@@ -31,7 +38,7 @@ export function evaluatePlaybooks(incident: IncidentEvidence, playbooks: Candida
   checkedRules.push({ id: "bounded_set", label: "Exactly two supported playbooks", outcome: exactSet ? "pass" : "reject" });
   if (!exactSet) { rejected = true; reasons.push("The proposal must contain exactly the two supported bounded playbooks."); }
   const amountSafe = playbooks.every((playbook) => playbook.amountPolicy === "preserve_original");
-  checkedRules.push({ id: "amount_integrity", label: "Original amount remains immutable", outcome: amountSafe ? "pass" : "reject" });
+  checkedRules.push({ id: "amount_integrity", label: "Original amount is preserved", outcome: amountSafe ? "pass" : "reject" });
   if (!amountSafe) { rejected = true; reasons.push("A playbook attempted to change the original amount."); }
   const supportedMethods = playbooks.every((playbook) => playbook.enabledMethods.every((method) => ["card", "upi", "netbanking"].includes(method)));
   checkedRules.push({ id: "supported_methods", label: "All payment methods are supported", outcome: supportedMethods ? "pass" : "reject" });

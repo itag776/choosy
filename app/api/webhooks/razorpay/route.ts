@@ -1,5 +1,5 @@
 import { apiError, ok } from "@/lib/http";
-import { processRazorpayWebhook } from "@/lib/run-service";
+import { processRazorpayWebhook, resolveWebhookRunId } from "@/lib/run-service";
 import { verifyRazorpaySignature } from "@/lib/webhook";
 
 export async function POST(request: Request) {
@@ -13,7 +13,9 @@ export async function POST(request: Request) {
     if (!eventId) return apiError(new Error("Missing x-razorpay-event-id header."), 400);
     const payload = JSON.parse(rawBody) as Record<string, unknown>;
     const eventType = String(payload.event ?? "unknown");
-    const result = await processRazorpayWebhook({ eventId, eventType, rawBody, payload });
+    const runId = resolveWebhookRunId(payload);
+    if (!runId) return ok({ accepted: true, ignored: true, reason: "No RecoverOS run correlation was present." });
+    const result = await processRazorpayWebhook({ eventId, eventType, rawBody, payload, runId });
     return ok({ accepted: true, ...result });
   } catch (error) {
     return apiError(error);

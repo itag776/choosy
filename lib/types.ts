@@ -43,7 +43,7 @@ export interface IncidentEvidence {
   baselineSuccessRate: number;
   observedSuccessRate: number;
   deltaPercentagePoints: number;
-  confidence: number;
+  incidentScore: number;
   revenueAtRiskPaise: number;
   topError: string;
   detectedAt: string;
@@ -97,7 +97,7 @@ export interface CanaryAssignment {
   caseId: string;
   playbookId: PlaybookId;
   ordinal: number;
-  immutable: true;
+  committed: true;
 }
 
 export interface PlaybookResult {
@@ -115,7 +115,7 @@ export interface CanaryResult {
   results: PlaybookResult[];
   winnerId: PlaybookId;
   liftMultiple: number;
-  confidenceWarning: string;
+  sampleWarning: string;
   completedAt: string;
 }
 
@@ -135,6 +135,7 @@ export interface PromotionRecommendation {
 
 export interface ExternalAction {
   id: string;
+  runId: string;
   type: "razorpay_payment_link";
   idempotencyKey: string;
   referenceId: string;
@@ -161,6 +162,16 @@ export interface RecoveryLedger {
   baselineContacts: number;
 }
 
+export interface ReplayCampaignEvent {
+  id: string;
+  sequence: number;
+  caseId: string;
+  playbookId: PlaybookId | "baseline_generic";
+  kind: "intervention_dispatched" | "recovery_captured" | "contact_stopped";
+  amountPaise: number;
+  createdAt: string;
+}
+
 export interface BenchmarkMetrics {
   detectionPrecision: number;
   detectionRecall: number;
@@ -170,7 +181,32 @@ export interface BenchmarkMetrics {
   duplicateExecutions: number;
   postRecoveryContacts: number;
   evaluatedCases: number;
+  safetyCases: number;
+  truePositives: number;
+  falsePositives: number;
+  falseNegatives: number;
+  datasetHash: string;
+  confidenceLevel: 0.95;
+  intervals: {
+    detectionPrecision: [number, number];
+    detectionRecall: [number, number];
+    playbookAccuracy: [number, number];
+  };
   generatedAt: string;
+}
+
+export interface ApprovalReceipt {
+  id: string;
+  type: "canary" | "promotion";
+  actorId: string;
+  actorRole: "operator";
+  reason: string;
+  runId: string;
+  approvedVersion: number;
+  policyDigest: string;
+  cohortDigest: string;
+  receiptDigest: string;
+  createdAt: string;
 }
 
 export interface AuditEvent {
@@ -182,6 +218,8 @@ export interface AuditEvent {
   actor: "system" | "agent" | "operator" | "razorpay";
   status: "info" | "success" | "warning" | "blocked";
   evidence?: Record<string, unknown>;
+  previousHash: string;
+  hash: string;
   createdAt: string;
 }
 
@@ -208,8 +246,10 @@ export interface RecoveryRunSnapshot {
   promotion: PromotionRecommendation | null;
   externalAction: ExternalAction | null;
   ledger: RecoveryLedger;
+  campaignEvents: ReplayCampaignEvent[];
   metrics: BenchmarkMetrics;
   audit: AuditEvent[];
+  approvals: ApprovalReceipt[];
   commandReceipts: CommandReceipt[];
   integration: {
     openai: boolean;
@@ -245,6 +285,12 @@ export interface RunCommandRequest {
   expectedVersion: number;
   idempotencyKey: string;
   payload?: Record<string, unknown>;
+}
+
+export interface OperatorIdentity {
+  actorId: string;
+  role: "operator";
+  runId: string;
 }
 
 export interface InterventionOutcome {

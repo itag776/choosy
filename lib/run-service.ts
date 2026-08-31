@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { createAuditEvent, createInitialRun, DEFAULT_RUN_ID, publicSnapshot } from "@/lib/demo-data";
 import { detectIncident } from "@/lib/detector";
 import { loadReplayFixture } from "@/lib/fixtures";
@@ -6,14 +6,14 @@ import { eligibleCases, evaluatePlaybooks } from "@/lib/policy";
 import { createOrReconcilePaymentLink, fetchPaymentLink, paymentLinkIntent } from "@/lib/razorpay";
 import { evaluatePromotion, investigateIncident } from "@/lib/recovery-agent";
 import { getRunRepository } from "@/lib/repository";
-import { computeReplayLedger, createCanaryAssignments, evaluateCanary } from "@/lib/simulator";
-import type { AuditEvent, RecoveryRunSnapshot, RunCommand, RunCommandRequest, RunPhase, StoredRecoveryRun } from "@/lib/types";
+import { createCanaryAssignments, evaluateCanary, executeReplayCampaign } from "@/lib/simulator";
+import type { ApprovalReceipt, AuditEvent, OperatorIdentity, RecoveryRunSnapshot, RunCommand, RunCommandRequest, RunPhase, StoredRecoveryRun } from "@/lib/types";
 
 export class RunServiceError extends Error {
   constructor(message: string, public status = 400) { super(message); }
 }
 
-type EventInput = Omit<AuditEvent, "id" | "sequence" | "createdAt">;
+type EventInput = Omit<AuditEvent, "id" | "sequence" | "createdAt" | "previousHash" | "hash">;
 
 function requirePhase(run: StoredRecoveryRun, allowed: RunPhase[]): void {
   if (!allowed.includes(run.phase)) {
@@ -60,6 +60,29 @@ function receipt(input: RunCommandRequest): { command: RunCommand; idempotencyKe
   return { command: input.command, idempotencyKey: input.idempotencyKey };
 }
 
+function digest(value: unknown): string {
+  return createHash("sha256").update(JSON.stringify(value)).digest("hex");
+}
+
+function createApprovalReceipt(run: StoredRecoveryRun, input: RunCommandRequest, operator: OperatorIdentity, type: ApprovalReceipt["type"]): ApprovalReceipt {
+  if (operator.runId !== run.id) throw new RunServiceError("The operator is not authorized for this recovery run.", 403);
+  const reason = typeof input.payload?.reason === "string" ? input.payload.reason.trim() : "";
+  if (reason.length < 12 || reason.length > 240) throw new RunServiceError("Approval requires a concise operator reason.", 422);
+  const unsigned = {
+    id: `approval_${randomUUID()}`,
+    type,
+    actorId: operator.actorId,
+    actorRole: operator.role,
+    reason,
+    runId: run.id,
+    approvedVersion: run.version,
+    policyDigest: digest(run.policyDecision),
+    cohortDigest: digest({ incident: run.incident, assignments: run.canaryAssignments, canary: run.canary }),
+    createdAt: new Date().toISOString(),
+  };
+  return { ...unsigned, receiptDigest: digest(unsigned) };
+}
+
 function delay(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
@@ -73,7 +96,8 @@ export async function getRunEvents(runId: string, after = 0): Promise<{ version:
   return { version: run.version, events: run.audit.filter((event) => event.sequence > after) };
 }
 
-export async function executeRunCommand(runId: string, input: RunCommandRequest): Promise<RecoveryRunSnapshot> {
+export async function executeRunCommand(runId: string, input: RunCommandRequest, operator: OperatorIdentity): Promise<RecoveryRunSnapshot> {
+  if (operator.runId !== runId) throw new RunServiceError("The operator is not authorized for this recovery run.", 403);
   let run = await getRunRepository().get(runId);
   const previous = run.commandReceipts.find((item) => item.idempotencyKey === input.idempotencyKey);
   if (previous) return publicSnapshot(run);
@@ -81,7 +105,7 @@ export async function executeRunCommand(runId: string, input: RunCommandRequest)
 
   switch (input.command) {
     case "reset_replay": {
-      const seeded = createInitialRun();
+      const seeded = createInitialRun(new Date(), run.id);
       run = await transition(run, "idle", (next) => {
         next.cycle = run.cycle + 1;
         next.fixtureVersion = seeded.fixtureVersion;
@@ -93,11 +117,12 @@ export async function executeRunCommand(runId: string, input: RunCommandRequest)
         next.promotion = null;
         next.externalAction = null;
         next.ledger = seeded.ledger;
+        next.campaignEvents = [];
         next.metrics = seeded.metrics;
         next.payments = [];
       }, [{
         kind: "demo", title: "Incident room reset",
-        detail: "The next replay will use the same verified fixture and a fresh recovery cycle. External receipts remain immutable.",
+        detail: "The next replay will use the same hash-verified fixture and a fresh recovery cycle. Earlier external receipts remain retained in their provider systems.",
         actor: "operator", status: "success", evidence: { cycle: run.cycle + 1 },
       }], receipt(input));
       break;
@@ -109,7 +134,7 @@ export async function executeRunCommand(runId: string, input: RunCommandRequest)
         next.payments = loadReplayFixture().payments;
       }, [{
         kind: "demo", title: "Replay stream opened",
-        detail: "240 immutable payment attempts are entering the detection window.",
+        detail: "240 hash-verified fixture records are entering the detection window.",
         actor: "operator", status: "info", evidence: { fixture: run.fixtureVersion, attempts: 240 },
       }]);
       await delay(450);
@@ -119,7 +144,7 @@ export async function executeRunCommand(runId: string, input: RunCommandRequest)
         kind: "detector", title: incident.title,
         detail: `${incident.failedAttempts} failures isolated; ₹${Math.round(incident.revenueAtRiskPaise / 100).toLocaleString("en-IN")} is at risk in deterministic replay.`,
         actor: "system", status: "warning",
-        evidence: { cohortQuery: incident.cohortQuery, threshold: incident.thresholds, confidence: incident.confidence },
+        evidence: { cohortQuery: incident.cohortQuery, threshold: incident.thresholds, incidentScore: incident.incidentScore },
       }], receipt(input));
       break;
     }
@@ -165,10 +190,14 @@ export async function executeRunCommand(runId: string, input: RunCommandRequest)
     case "reject_canary": {
       requirePhase(run, ["awaiting_canary_approval"]);
       const approve = input.command === "approve_canary";
-      run = await transition(run, approve ? "canary_approved" : "rejected", () => undefined, [{
+      const approval = approve ? createApprovalReceipt(run, input, operator, "canary") : null;
+      run = await transition(run, approve ? "canary_approved" : "rejected", (next) => {
+        if (approval) next.approvals.push(approval);
+      }, [{
         kind: "approval", title: approve ? "Canary approved" : "Canary rejected",
-        detail: approve ? "Operator approved a replay-only twelve-case experiment. No live payment action was initiated." : "Operator rejected the campaign before execution.",
+        detail: approve ? `${operator.actorId} approved a replay-only twelve-case experiment. No live payment action was initiated.` : `${operator.actorId} rejected the campaign before execution.`,
         actor: "operator", status: approve ? "success" : "blocked",
+        evidence: approval ? { approvalId: approval.id, receiptDigest: approval.receiptDigest, approvedVersion: approval.approvedVersion } : { actorId: operator.actorId },
       }], receipt(input));
       break;
     }
@@ -179,7 +208,7 @@ export async function executeRunCommand(runId: string, input: RunCommandRequest)
       const eligible = eligibleCases(run.payments, run.incident);
       const assignments = createCanaryAssignments(eligible, run.dataset.seed, 12);
       run = await transition(run, "canary_running", (next) => { next.canaryAssignments = assignments; }, [{
-        kind: "canary", title: "Immutable canary assignment committed",
+        kind: "canary", title: "Canary assignment persisted before outcome lookup",
         detail: "Twelve eligible cases were randomized 6 × 6 before intervention outcomes were read.",
         actor: "system", status: "info",
         evidence: { seed: run.dataset.seed, assignments },
@@ -223,12 +252,14 @@ export async function executeRunCommand(runId: string, input: RunCommandRequest)
     case "approve_promotion": {
       requirePhase(run, ["awaiting_promotion_approval"]);
       if (run.promotion?.recommendation !== "promote" || !run.incident) throw new RunServiceError("There is no promotable recommendation.", 422);
-      const ledger = computeReplayLedger(eligibleCases(run.payments, run.incident));
-      run = await transition(run, "promoted", (next) => { next.ledger = ledger; }, [{
+      const campaign = executeReplayCampaign(eligibleCases(run.payments, run.incident), run.promotion.playbookId!);
+      const ledger = campaign.ledger;
+      const approval = createApprovalReceipt(run, input, operator, "promotion");
+      run = await transition(run, "promoted", (next) => { next.ledger = ledger; next.campaignEvents = campaign.events; next.approvals.push(approval); }, [{
         kind: "approval", title: "Winning playbook promoted",
-        detail: `₹${Math.round(ledger.simulatedAmountPaise / 100).toLocaleString("en-IN")} recovered in deterministic replay versus ₹${Math.round(ledger.baselineAmountPaise / 100).toLocaleString("en-IN")} for the baseline.`,
+        detail: `${operator.actorId} authorized expansion: ₹${Math.round(ledger.simulatedAmountPaise / 100).toLocaleString("en-IN")} recovered in deterministic replay versus ₹${Math.round(ledger.baselineAmountPaise / 100).toLocaleString("en-IN")} for the baseline.`,
         actor: "operator", status: "success",
-        evidence: { syntheticReplay: ledger.simulatedAmountPaise, baseline: ledger.baselineAmountPaise, realRevenueClaimed: false },
+        evidence: { syntheticReplay: ledger.simulatedAmountPaise, baseline: ledger.baselineAmountPaise, replayEvents: campaign.events.length, realRevenueClaimed: false, approvalId: approval.id, receiptDigest: approval.receiptDigest },
       }], receipt(input));
       break;
     }
@@ -242,7 +273,7 @@ export async function executeRunCommand(runId: string, input: RunCommandRequest)
       await getRunRepository().saveExternalAction(run.id, action);
       run = await transition(run, "payment_link_creating", (next) => { next.externalAction = action; }, [{
         kind: "razorpay", title: "Payment Link intent persisted",
-        detail: "A stable reference ID and immutable ₹400 amount were recorded before contacting Razorpay.",
+        detail: "A stable reference ID and policy-locked ₹400 amount were recorded before contacting Razorpay.",
         actor: "system", status: "info", evidence: { referenceId: action.referenceId, requestDigest: action.requestDigest },
       }]);
       try {
@@ -352,23 +383,28 @@ export async function processRazorpayWebhook(input: {
   eventType: string;
   rawBody: string;
   payload: Record<string, unknown>;
-  runId?: string;
+  runId: string;
 }): Promise<{ duplicate: boolean; ignored: boolean; state: RecoveryRunSnapshot }> {
   const repository = getRunRepository();
-  let run = await repository.get(input.runId ?? DEFAULT_RUN_ID);
+  let run = await repository.get(input.runId);
   const digest = createHash("sha256").update(input.rawBody).digest("hex");
   const paymentLink = payloadEntity(input.payload, "payment_link");
   const payment = payloadEntity(input.payload, "payment");
   const paid = input.eventType === "payment_link.paid" || input.eventType === "payment.captured";
-  const remoteId = String(paymentLink?.id ?? "");
+  const paymentNotes = payment?.notes as Record<string, unknown> | undefined;
+  const linkNotes = paymentLink?.notes as Record<string, unknown> | undefined;
+  const remoteId = String(paymentLink?.id ?? payment?.payment_link_id ?? paymentNotes?.recoveros_payment_link_id ?? "");
+  const referenceId = String(paymentLink?.reference_id ?? linkNotes?.recoveros_reference_id ?? paymentNotes?.recoveros_reference_id ?? "");
   const tracked = run.externalAction;
   let ignored = true;
   let event: AuditEvent;
   const next = structuredClone(run);
 
-  if (paid && tracked && (!remoteId || remoteId === tracked.providerId)) {
-    const amountPaise = Number(payment?.amount ?? paymentLink?.amount ?? tracked.amountPaise);
-    if (amountPaise === tracked.amountPaise) {
+  const exactArtifact = Boolean(tracked?.providerId && remoteId === tracked.providerId && referenceId === tracked.referenceId);
+  if (paid && tracked && exactArtifact) {
+    const rawAmount = payment?.amount ?? paymentLink?.amount;
+    const amountPaise = Number(rawAmount);
+    if (rawAmount !== undefined && Number.isFinite(amountPaise) && amountPaise === tracked.amountPaise) {
       ignored = false;
       next.phase = "test_payment_captured";
       next.externalAction = { ...tracked, status: "paid", providerStatus: "paid", updatedAt: new Date().toISOString() };
@@ -378,17 +414,17 @@ export async function processRazorpayWebhook(input: {
       }
       event = createAuditEvent(next, {
         kind: "webhook", title: "Razorpay Test Mode recovery captured",
-        detail: `₹${Math.round(amountPaise / 100).toLocaleString("en-IN")} captured from a signed ${input.eventType} event.`,
+        detail: `₹${Math.round(amountPaise / 100).toLocaleString("en-IN")} captured from an HMAC-verified ${input.eventType} event.`,
         actor: "razorpay", status: "success", evidence: { eventId: input.eventId, payloadDigest: digest },
       });
     } else {
       event = createAuditEvent(next, {
         kind: "guardrail", title: "Webhook amount mismatch blocked",
-        detail: "The signed event did not match the immutable recovery amount.",
+        detail: "The HMAC-verified event did not contain the policy-locked recovery amount.",
         actor: "system", status: "blocked", evidence: { expectedPaise: tracked.amountPaise, receivedPaise: amountPaise },
       });
     }
-  } else if (input.eventType === "payment.failed" && (run.phase === "test_payment_captured" || tracked?.status === "paid")) {
+  } else if (input.eventType === "payment.failed" && exactArtifact && (run.phase === "test_payment_captured" || tracked?.status === "paid")) {
     event = createAuditEvent(next, {
       kind: "webhook", title: "Late failure ignored",
       detail: "A terminal paid state already exists, so this out-of-order failure cannot regress it.",
@@ -418,4 +454,16 @@ export async function processRazorpayWebhook(input: {
     return { duplicate: true, ignored: true, state: publicSnapshot(run) };
   }
   return { duplicate: false, ignored, state: publicSnapshot(result.run) };
+}
+
+function webhookNotes(entity: Record<string, unknown> | undefined): Record<string, unknown> {
+  return entity?.notes && typeof entity.notes === "object" ? entity.notes as Record<string, unknown> : {};
+}
+
+export function resolveWebhookRunId(payload: Record<string, unknown>): string | null {
+  const paymentLink = payloadEntity(payload, "payment_link");
+  const payment = payloadEntity(payload, "payment");
+  const candidates = [webhookNotes(paymentLink).recoveros_run_id, webhookNotes(payment).recoveros_run_id];
+  const runId = candidates.find((value) => typeof value === "string");
+  return typeof runId === "string" && /^run_[a-f0-9]{24}$/.test(runId) ? runId : null;
 }

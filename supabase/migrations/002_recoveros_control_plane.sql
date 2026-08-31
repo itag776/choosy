@@ -26,7 +26,7 @@ create table if not exists public.recovery_runs (
 );
 
 create table if not exists public.payment_attempts (
-  id text primary key,
+  id text not null,
   run_id text not null references public.recovery_runs(id) on delete cascade,
   customer_id text not null,
   amount_paise bigint not null check (amount_paise > 0),
@@ -38,8 +38,14 @@ create table if not exists public.payment_attempts (
   error_step text,
   consent boolean not null,
   contacts_last_24h integer not null default 0,
-  created_at timestamptz not null
+  created_at timestamptz not null,
+  primary key (run_id, id)
 );
+
+-- Earlier preview migrations keyed fixture attempts globally. Re-key by run so
+-- simultaneous judge sessions cannot overwrite each other's replay rows.
+alter table public.payment_attempts drop constraint if exists payment_attempts_pkey;
+alter table public.payment_attempts add constraint payment_attempts_pkey primary key (run_id, id);
 
 create table if not exists public.agent_runs (
   id uuid primary key default gen_random_uuid(),
@@ -89,6 +95,20 @@ create table if not exists public.audit_events (
   unique (run_id, sequence)
 );
 
+create table if not exists public.approval_receipts (
+  id text primary key,
+  run_id text not null references public.recovery_runs(id) on delete cascade,
+  approval_type text not null check (approval_type in ('canary', 'promotion')),
+  actor_id text not null,
+  actor_role text not null check (actor_role = 'operator'),
+  reason text not null,
+  approved_version bigint not null,
+  policy_digest text not null check (length(policy_digest) = 64),
+  cohort_digest text not null check (length(cohort_digest) = 64),
+  receipt_digest text not null unique check (length(receipt_digest) = 64),
+  created_at timestamptz not null
+);
+
 create or replace function public.apply_run_transition(
   p_run_id text,
   p_expected_version bigint,
@@ -103,6 +123,7 @@ as $$
 declare
   v_snapshot jsonb;
   v_event jsonb;
+  v_approval jsonb;
 begin
   update recovery_runs
   set phase = p_next_phase,
@@ -121,6 +142,19 @@ begin
     insert into audit_events(run_id, sequence, event)
     values (p_run_id, (v_event->>'sequence')::bigint, v_event)
     on conflict (run_id, sequence) do nothing;
+  end loop;
+
+  for v_approval in select value from jsonb_array_elements(coalesce(p_state_patch->'approvals', '[]'::jsonb))
+  loop
+    insert into approval_receipts(
+      id, run_id, approval_type, actor_id, actor_role, reason, approved_version,
+      policy_digest, cohort_digest, receipt_digest, created_at
+    ) values (
+      v_approval->>'id', p_run_id, v_approval->>'type', v_approval->>'actorId',
+      v_approval->>'actorRole', v_approval->>'reason', (v_approval->>'approvedVersion')::bigint,
+      v_approval->>'policyDigest', v_approval->>'cohortDigest', v_approval->>'receiptDigest',
+      (v_approval->>'createdAt')::timestamptz
+    ) on conflict (id) do nothing;
   end loop;
 
   return jsonb_build_object('snapshot', v_snapshot);
@@ -179,7 +213,32 @@ alter table public.agent_runs enable row level security;
 alter table public.external_actions enable row level security;
 alter table public.webhook_receipts enable row level security;
 alter table public.audit_events enable row level security;
+alter table public.approval_receipts enable row level security;
+
+create or replace function public.prevent_evidence_mutation()
+returns trigger
+language plpgsql
+as $$
+begin
+  raise exception 'evidence_is_append_only';
+end;
+$$;
+
+drop trigger if exists audit_events_append_only on public.audit_events;
+create trigger audit_events_append_only
+before update or delete on public.audit_events
+for each row execute function public.prevent_evidence_mutation();
+
+drop trigger if exists approval_receipts_append_only on public.approval_receipts;
+create trigger approval_receipts_append_only
+before update or delete on public.approval_receipts
+for each row execute function public.prevent_evidence_mutation();
+
+revoke all on function public.apply_run_transition(text, bigint, text, jsonb, jsonb) from public, anon, authenticated;
+revoke all on function public.process_razorpay_webhook(text, bigint, text, text, text, jsonb, jsonb) from public, anon, authenticated;
+grant execute on function public.apply_run_transition(text, bigint, text, jsonb, jsonb) to service_role;
+grant execute on function public.process_razorpay_webhook(text, bigint, text, text, text, jsonb, jsonb) to service_role;
 
 comment on function public.apply_run_transition is 'Optimistic, atomic run transition with append-only audit events.';
 comment on function public.process_razorpay_webhook is 'Atomically deduplicates a Razorpay event and applies a monotonic run transition.';
-
+comment on table public.approval_receipts is 'Authenticated, digest-bound operator approvals. Update and delete are blocked.';

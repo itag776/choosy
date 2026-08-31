@@ -1,6 +1,16 @@
 # RecoverOS Canary Commander
 
-RecoverOS is a governed payment-recovery incident room for Razorpay Buildathon Track 03. It detects a payment degradation, investigates through five typed tools, proposes two policy-bounded playbooks, runs an immutable randomized canary, promotes only after a second human gate, and proves the last mile with a Razorpay Test Mode payment.
+RecoverOS is a governed revenue-recovery incident room for Razorpay Buildathon Track 03. It detects payment degradation, asks a bounded AI investigator for evidence-backed options, enforces merchant policy in deterministic code, requires two authenticated human approvals, compares recovery strategies on a replay canary, and proves the final provider boundary with a correlated Razorpay Test Mode payment.
+
+The product keeps three claims separate:
+
+- **Deterministic replay recovered** is calculated from synthetic fixture outcomes.
+- **Razorpay Test Mode recovered** is sandbox money confirmed by an exactly correlated provider response or verified webhook.
+- Neither figure is real merchant revenue, and the UI never adds them together.
+
+## Why this is more than a dashboard
+
+The control loop is executable: observe → investigate → approve → experiment → approve → replay promotion → Test Mode proof. The AI can interpret evidence and recommend, but it cannot bypass the typed policy gate, approve its own action, or directly move money. Every browser session receives an isolated run ID, every command is versioned and idempotent, and every approval is bound to the operator, run, reviewed version, policy digest, cohort digest, reason, and timestamp.
 
 ## Run locally
 
@@ -10,43 +20,23 @@ cp .env.example .env.local
 npm run dev
 ```
 
-Open `http://localhost:3000`. The complete deterministic replay works without credentials using a visibly labelled safe fallback. Add `OPENAI_API_KEY` to use the real OpenAI Agents SDK path pinned to `gpt-5.4-mini-2026-03-17`.
+Open `http://localhost:3000`. In development, sign in as `operator_judge` with `recoveros-demo`. Production has no fallback credentials and fails closed unless both operator-auth variables are configured.
 
-The local fallback is durable across browser sessions and server restarts: it writes atomically to the operating-system temporary directory. It is a developer convenience, never presented as the production control plane.
+The complete replay works without third-party credentials using a visibly labelled deterministic fallback. Add `OPENAI_API_KEY` to use the OpenAI Agents SDK path pinned in code. Without Supabase, isolated run snapshots are atomically stored under the operating-system temporary directory; this is a development convenience, not the production control plane.
 
 ## Razorpay Test Mode
 
-Add Test Mode credentials and a webhook secret to `.env.local`:
+Add Test Mode credentials and a webhook secret to `.env.local`, then configure `https://YOUR_HOST/api/webhooks/razorpay` for `payment.captured`, `payment.failed`, and `payment_link.paid`.
 
-```text
-RAZORPAY_KEY_ID=rzp_test_...
-RAZORPAY_KEY_SECRET=...
-RAZORPAY_WEBHOOK_SECRET=...
-```
-
-Configure the public webhook URL as:
-
-```text
-https://YOUR_HOST/api/webhooks/razorpay
-```
-
-Subscribe to `payment.captured`, `payment.failed`, and `payment_link.paid`. RecoverOS validates the raw-body HMAC, requires `x-razorpay-event-id`, suppresses duplicates, and never lets a late failure overwrite a paid state.
+RecoverOS verifies the raw-body HMAC and requires `x-razorpay-event-id`. It resolves the run only from correlation metadata placed in the Payment Link, then requires the provider Payment Link ID and reference ID to match the persisted external-action intent. An unrelated signed event cannot capture the run. Event IDs are deduplicated and a late failure cannot regress a paid state.
 
 ## Supabase control plane
 
-Apply `supabase/migrations/002_recoveros_control_plane.sql`, then set `NEXT_PUBLIC_SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY`. Supabase becomes authoritative for runs, payment attempts, agent runs, external actions, webhook receipts and append-only audit events. The migration includes the atomic `apply_run_transition` and `process_razorpay_webhook` functions.
+Apply `supabase/migrations/002_recoveros_control_plane.sql`, then set `NEXT_PUBLIC_SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY`. The migration provides version-checked atomic transitions, atomic webhook deduplication, row-level security, service-role-only RPC execution, and update/delete blockers for audit events and approval receipts.
 
-Never expose `SUPABASE_SERVICE_ROLE_KEY`, Razorpay secrets or the OpenAI key to the browser.
+Never expose `SUPABASE_SERVICE_ROLE_KEY`, Razorpay secrets, the operator session secret, or the OpenAI key to the browser.
 
-## Production deployment
-
-1. Apply the Supabase control-plane migration.
-2. Add the variables from `.env.example` to Vercel Production and Preview environments.
-3. Deploy the Next.js application.
-4. Point the Razorpay Test Mode webhook to `https://YOUR_HOST/api/webhooks/razorpay`.
-5. Run `npm run eval`, then complete one self-owned Test Mode Payment Link before the demo.
-
-## Verification
+## Evidence and verification
 
 ```bash
 npm test
@@ -55,12 +45,10 @@ npm run lint
 npm run build
 ```
 
-The benchmark is calculated from a committed 100-window locked holdout. The replay contains 240 attempts, pre-generated intervention outcomes and a SHA-256 manifest. Canary assignment is seeded and persisted before outcome lookup; every displayed result is computed from those artifacts.
+`runLockedBenchmark()` generates 160 deterministic adversarial payment windows and executes the real detector, cohort selection, playbook selector, policy evaluator, and replay campaign adapter. Metrics, confusion counts, the dataset SHA-256 digest, and 95% Wilson intervals are derived at runtime. Six malformed or unsafe policy proposals exercise the rejection boundary. Release gates require precision/recall ≥90%, cohort F1 ≥85%, playbook selection ≥80%, zero accepted policy attacks, zero duplicate dispatches, zero contacts after capture, and replay recovery above baseline without extra contacts.
 
-Release gates are encoded in `tests/eval.test.ts`: detector precision/recall ≥90%, cohort F1 ≥85%, playbook selection ≥80%, zero policy violations, duplicate executions and post-recovery contacts, and better replay recovery than the baseline without more contacts.
+See [architecture](ARCHITECTURE.md), [threat model](THREAT_MODEL.md), [evaluation methodology](EVALUATION.md), [exact testing instructions](TESTING.md), and [submission links/checklist](SUBMISSION.md).
 
-## Claims policy
+## Integration status
 
-- **Deterministic replay recovered:** calculated synthetic outcomes used to compare playbooks.
-- **Razorpay Test Mode recovered:** sandbox capture received from Razorpay or synchronized from its API.
-- These values are deliberately never summed or presented as real merchant revenue.
+Live OpenAI, Razorpay, webhook, Supabase, deployment, and video values are intentionally not fabricated. The incident-room rail reports each configured system independently. Complete the remaining owner-only setup in `SUBMISSION.md` before judging.

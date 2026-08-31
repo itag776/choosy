@@ -25,7 +25,7 @@ export function stableReferenceId(runId: string, caseId: string): string {
 export function paymentLinkIntent(runId: string, caseId: string, amountPaise: number, now = new Date()): ExternalAction {
   const referenceId = stableReferenceId(runId, caseId);
   return {
-    id: `ext_${referenceId}`, type: "razorpay_payment_link", idempotencyKey: `payment_link:${referenceId}`,
+    id: `ext_${referenceId}`, runId, type: "razorpay_payment_link", idempotencyKey: `payment_link:${referenceId}`,
     referenceId, caseId, amountPaise, status: "intent_recorded",
     requestDigest: createHash("sha256").update(JSON.stringify({ referenceId, caseId, amountPaise, methods: ["upi", "netbanking"] })).digest("hex"),
     createdAt: now.toISOString(), updatedAt: now.toISOString(),
@@ -64,7 +64,12 @@ export async function createOrReconcilePaymentLink(action: ExternalAction): Prom
         amount: action.amountPaise, currency: "INR", reference_id: action.referenceId,
         description: "RecoverOS approved Test Mode recovery",
         expire_by: Math.floor(Date.now() / 1000) + 3_600, reminder_enable: false,
-        notes: { recoveros_case_id: action.caseId, environment: "test_mode" },
+        notes: {
+          recoveros_run_id: action.runId,
+          recoveros_case_id: action.caseId,
+          recoveros_reference_id: action.referenceId,
+          environment: "test_mode",
+        },
         options: { checkout: { method: { card: false, upi: true, netbanking: true, wallet: false } } },
       }),
       signal: AbortSignal.timeout(8_000),

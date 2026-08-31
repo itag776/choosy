@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { apiError, ok } from "@/lib/http";
 import { executeRunCommand } from "@/lib/run-service";
+import { requireOperatorSession } from "@/lib/operator-session";
 
 const CommandSchema = z.object({
   command: z.enum([
@@ -16,11 +17,11 @@ const CommandSchema = z.object({
 export async function POST(request: Request, context: { params: Promise<{ runId: string }> }) {
   try {
     const { runId } = await context.params;
+    const operator = await requireOperatorSession(runId);
     const command = CommandSchema.parse(await request.json());
-    return ok(await executeRunCommand(runId, command));
+    return ok(await executeRunCommand(runId, command, operator));
   } catch (error) {
     if (error instanceof z.ZodError) return apiError(new Error(`Invalid command: ${error.issues[0]?.message ?? "schema mismatch"}`), 422);
     return apiError(error);
   }
 }
-

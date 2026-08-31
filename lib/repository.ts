@@ -2,6 +2,7 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createInitialRun, DEFAULT_MERCHANT_ID } from "@/lib/demo-data";
+import { verifyAuditChain } from "@/lib/demo-data";
 import { getSupabaseAdmin, hasSupabaseConfig } from "@/lib/supabase";
 import type { AuditEvent, ExternalAction, InvestigationResult, PromotionRecommendation, StoredRecoveryRun } from "@/lib/types";
 
@@ -25,26 +26,34 @@ export interface RunRepository {
   applyWebhook(current: StoredRecoveryRun, next: StoredRecoveryRun, eventId: string, eventType: string, payloadDigest: string, auditEvent: AuditEvent): Promise<WebhookTransitionResult>;
 }
 
-const localPath = join(tmpdir(), "recoveros-canary-commander", "state.json");
+const localDirectory = join(tmpdir(), "recoveros-canary-commander", "runs");
 let localQueue: Promise<void> = Promise.resolve();
+
+function localPath(runId: string): string {
+  if (!/^run_(?:[a-f0-9]{24}|canary_commander)$/.test(runId)) throw Object.assign(new Error("Invalid recovery run identifier."), { status: 422 });
+  return join(localDirectory, `${runId}.json`);
+}
 
 async function readLocal(runId: string): Promise<StoredRecoveryRun> {
   try {
-    const parsed = JSON.parse(await readFile(localPath, "utf8")) as StoredRecoveryRun;
-    if (parsed.id !== runId || !parsed.canaryAssignments || !parsed.fixtureVersion || !parsed.cycle) throw new Error("Incompatible local state.");
+    const parsed = JSON.parse(await readFile(localPath(runId), "utf8")) as StoredRecoveryRun;
+    if (parsed.id !== runId || !parsed.canaryAssignments || !parsed.fixtureVersion || !parsed.cycle || !parsed.approvals) throw new Error("Incompatible local state.");
+    if (!verifyAuditChain(parsed.audit)) throw new Error("Recovery audit hash chain verification failed.");
     return parsed;
-  } catch {
-    const seeded = createInitialRun();
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    const seeded = createInitialRun(new Date(), runId);
     await writeLocal(seeded);
     return seeded;
   }
 }
 
 async function writeLocal(run: StoredRecoveryRun): Promise<void> {
-  await mkdir(join(tmpdir(), "recoveros-canary-commander"), { recursive: true });
-  const temporary = `${localPath}.${process.pid}.tmp`;
+  await mkdir(localDirectory, { recursive: true });
+  const path = localPath(run.id);
+  const temporary = `${path}.${process.pid}.tmp`;
   await writeFile(temporary, JSON.stringify(run), "utf8");
-  await rename(temporary, localPath);
+  await rename(temporary, path);
 }
 
 class LocalFileRepository implements RunRepository {
@@ -100,10 +109,10 @@ class SupabaseRunRepository implements RunRepository {
     const { data, error } = await this.client.from("recovery_runs").select("snapshot").eq("id", runId).maybeSingle();
     if (error) throw new Error(`Supabase run read failed: ${error.message}`);
     if (!data) {
-      const run = createInitialRun();
+      const run = createInitialRun(new Date(), runId);
       const { error: merchantError } = await this.client.from("merchants").upsert({ id: DEFAULT_MERCHANT_ID, name: "Northstar Commerce", environment: "replay" });
       if (merchantError) throw new Error(`Supabase merchant seed failed: ${merchantError.message}`);
-      const { error: policyError } = await this.client.from("merchant_policies").upsert({ merchant_id: DEFAULT_MERCHANT_ID, source_text: "RecoverOS governed recovery policy v1", compiled_rules: { amountImmutable: true, maximumContacts24h: 2, approvalThresholdPaise: 2_500_000, stopOnCapture: true } });
+      const { error: policyError } = await this.client.from("merchant_policies").upsert({ merchant_id: DEFAULT_MERCHANT_ID, source_text: "RecoverOS governed recovery policy v1", compiled_rules: { preserveOriginalAmount: true, maximumContacts24h: 2, approvalThresholdPaise: 2_500_000, stopOnCapture: true } });
       if (policyError) throw new Error(`Supabase policy seed failed: ${policyError.message}`);
       const { error: runError } = await this.client.from("recovery_runs").insert({ id: run.id, merchant_id: run.merchantId, phase: run.phase, version: run.version, fixture_version: run.fixtureVersion, snapshot: run });
       if (runError && runError.code !== "23505") throw new Error(`Supabase run seed failed: ${runError.message}`);
@@ -111,6 +120,7 @@ class SupabaseRunRepository implements RunRepository {
       return run;
     }
     const run = data.snapshot as StoredRecoveryRun;
+    if (!verifyAuditChain(run.audit)) throw new Error("Recovery audit hash chain verification failed.");
     run.integration = { openai: Boolean(process.env.OPENAI_API_KEY), razorpay: Boolean(process.env.RAZORPAY_KEY_ID && process.env.RAZORPAY_KEY_SECRET), webhookSecret: Boolean(process.env.RAZORPAY_WEBHOOK_SECRET), persistence: "supabase" };
     return run;
   }
@@ -129,7 +139,7 @@ class SupabaseRunRepository implements RunRepository {
         error_source: payment.errorSource, error_step: payment.errorStep, consent: payment.consent,
         contacts_last_24h: payment.contactsLast24h, created_at: payment.createdAt,
       }));
-      const { error: paymentsError } = await this.client.from("payment_attempts").upsert(rows);
+      const { error: paymentsError } = await this.client.from("payment_attempts").upsert(rows, { onConflict: "run_id,id" });
       if (paymentsError) throw new Error(`Supabase payment seed failed: ${paymentsError.message}`);
     }
     return (data as { snapshot: StoredRecoveryRun }).snapshot;

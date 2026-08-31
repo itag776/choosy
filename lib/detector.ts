@@ -18,7 +18,7 @@ function titleFor(cohort: Cohort): string {
 export function detectIncident(payments: PaymentAttempt[], now = new Date()): IncidentEvidence | null {
   const groups = new Map<string, Cohort>();
   for (const payment of payments) {
-    if (payment.status !== "failed" || !payment.errorReason || !payment.errorStep) continue;
+    if (payment.status !== "failed" || payment.errorSource === "customer" || !payment.errorReason || !payment.errorStep) continue;
     const key = [payment.issuer, payment.method, payment.errorStep, payment.errorReason].join("|");
     const existing = groups.get(key);
     if (existing) existing.payments.push(payment);
@@ -26,12 +26,12 @@ export function detectIncident(payments: PaymentAttempt[], now = new Date()): In
   }
 
   const candidates = [...groups.values()].map((cohort) => {
-    const total = payments.filter((payment) => payment.issuer === cohort.issuer && payment.method === cohort.method && payment.errorStep === cohort.errorStep);
+    const total = payments.filter((payment) => payment.issuer === cohort.issuer && payment.method === cohort.method);
     const denominator = Math.max(cohort.payments.length, total.length);
-    const observed = (denominator - cohort.payments.length) / denominator;
+    const observed = total.filter((payment) => payment.status === "captured").length / denominator;
     return { cohort, observed, delta: (DETECTOR_THRESHOLDS.baselineSuccessRate - observed) * 100 };
   }).filter(({ cohort, delta }) =>
-    cohort.payments.length >= DETECTOR_THRESHOLDS.minimumSample &&
+    payments.filter((payment) => payment.issuer === cohort.issuer && payment.method === cohort.method).length >= DETECTOR_THRESHOLDS.minimumSample &&
     delta >= DETECTOR_THRESHOLDS.minimumDropPercentagePoints,
   ).sort((a, b) => b.cohort.payments.length - a.cohort.payments.length);
 
@@ -40,7 +40,7 @@ export function detectIncident(payments: PaymentAttempt[], now = new Date()): In
   const { cohort, observed, delta } = match;
   const customerErrors = payments.filter((payment) => payment.status === "failed" && payment.errorSource === "customer").length;
   const otherIssuerFailures = payments.filter((payment) => payment.status === "failed" && payment.issuer !== cohort.issuer).length;
-  const confidence = Math.min(0.997, 0.8 + cohort.payments.length / Math.max(1, payments.length) * 0.4);
+  const incidentScore = Math.min(0.997, 0.8 + cohort.payments.length / Math.max(1, payments.length) * 0.4);
 
   return {
     id: `inc_${cohort.issuer.toLowerCase().replaceAll(" ", "_")}_${cohort.method}_001`,
@@ -52,13 +52,13 @@ export function detectIncident(payments: PaymentAttempt[], now = new Date()): In
     baselineSuccessRate: DETECTOR_THRESHOLDS.baselineSuccessRate,
     observedSuccessRate: observed,
     deltaPercentagePoints: delta,
-    confidence,
+    incidentScore,
     revenueAtRiskPaise: cohort.payments.reduce((sum, payment) => sum + payment.amountPaise, 0),
     topError: cohort.errorReason,
     detectedAt: now.toISOString(),
     thresholds: { minimumSample: DETECTOR_THRESHOLDS.minimumSample, minimumDropPercentagePoints: DETECTOR_THRESHOLDS.minimumDropPercentagePoints },
     competingHypotheses: [
-      { id: "issuer_degradation", label: "Issuer-side authentication degradation", support: confidence, evidence: `${cohort.payments.length} concentrated failures share issuer, step and bank-sourced reason.`, disposition: "supported" },
+      { id: "issuer_degradation", label: "Issuer-side authentication degradation", support: incidentScore, evidence: `${cohort.payments.length} concentrated failures share issuer, step and bank-sourced reason.`, disposition: "supported" },
       { id: "customer_error", label: "Customer input error", support: customerErrors / Math.max(1, payments.length), evidence: `Only ${customerErrors} customer-sourced failures exist outside the cohort.`, disposition: "rejected" },
       { id: "platform_wide", label: "Platform-wide checkout failure", support: otherIssuerFailures / Math.max(1, payments.length), evidence: `Only ${otherIssuerFailures} failures occur at other issuers.`, disposition: "rejected" },
     ],
