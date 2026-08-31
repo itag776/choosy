@@ -11,7 +11,7 @@
 
 - **Live demo:** `PENDING — add the deployed HTTPS URL`
 - **Demo video:** `PENDING — add the final public/unlisted video URL`
-- **Source repository:** `PENDING — replace after the initial GitHub push`
+- **Source repository:** https://github.com/itag776/recoveros-canary-commander
 
 These values are deliberately placeholders so the submission never claims a deployment or recording that does not exist.
 
