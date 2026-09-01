@@ -32,7 +32,7 @@ Add Test Mode credentials and a webhook secret to `.env.local`, then configure `
 
 Kept verifies the raw-body HMAC and requires `x-razorpay-event-id`. It resolves the run only from correlation metadata placed in the Payment Link, then requires the provider Payment Link ID and reference ID to match the persisted external-action intent. An unrelated signed event cannot capture the run. Event IDs are deduplicated and a late failure cannot regress a paid state.
 
-The production webhook endpoint is `https://recoveros-canary-commander.vercel.app/api/webhooks/razorpay`.
+The production webhook endpoint is `https://usekept.vercel.app/api/webhooks/razorpay`.
 
 ## Supabase control plane
 
@@ -55,6 +55,6 @@ See [architecture](ARCHITECTURE.md), [threat model](THREAT_MODEL.md), [evaluatio
 
 ## Live deployment
 
-[Open the production demo](https://recoveros-canary-commander.vercel.app). Production has been exercised end to end through Gemini investigation and promotion evaluation, authenticated approvals, Supabase persistence, and Razorpay Test Mode Payment Link creation and synchronization. The Vercel project is intentionally deployed from the CLI without a Git connection, so repository pushes do not trigger automatic deployments.
+[Open the production demo](https://usekept.vercel.app). Production has been exercised end to end through Gemini investigation and promotion evaluation, authenticated approvals, Supabase persistence, and Razorpay Test Mode Payment Link creation and synchronization. The Vercel project is intentionally deployed from the CLI without a Git connection, so repository pushes do not trigger automatic deployments.
 
 The signed Razorpay webhook and demo video remain owner-completion items. The incident-room rail reports each configured system independently; see `SUBMISSION.md` for the final checklist.

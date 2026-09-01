@@ -9,7 +9,7 @@
 
 ## Links
 
-- **Live demo:** https://recoveros-canary-commander.vercel.app
+- **Live demo:** https://usekept.vercel.app
 - **Demo video:** `PENDING — add the final public/unlisted video URL`
 - **Source repository:** https://github.com/itag776/recoveros-canary-commander
 
