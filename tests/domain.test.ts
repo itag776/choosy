@@ -9,6 +9,7 @@ import { fallbackInvestigation } from "@/lib/recovery-agent";
 import { RepositoryConflictError, setRunRepositoryForTests, type RunRepository } from "@/lib/repository";
 import { executeRunCommand, getRun, processRazorpayWebhook } from "@/lib/run-service";
 import { createCanaryAssignments, evaluateCanary } from "@/lib/simulator";
+import { hasSupabaseConfig } from "@/lib/supabase";
 import type { RunCommand, StoredRecoveryRun } from "@/lib/types";
 import { verifyRazorpaySignature } from "@/lib/webhook";
 import { createOperatorToken, verifyAccessCode, verifyOperatorToken } from "@/lib/operator-auth";
@@ -114,6 +115,24 @@ describe("operator authentication and isolation", () => {
     await expect(executeRunCommand(DEFAULT_RUN_ID, {
       command: "inject_incident", expectedVersion: 1, idempotencyKey: "cross-run",
     }, { ...operator, runId: "run_aaaaaaaaaaaaaaaaaaaaaaaa" })).rejects.toMatchObject({ status: 403 });
+  });
+});
+
+describe("Supabase configuration", () => {
+  afterEach(() => vi.unstubAllEnvs());
+
+  it("accepts the current server-secret key format", () => {
+    vi.stubEnv("NEXT_PUBLIC_SUPABASE_URL", "https://project.supabase.co");
+    vi.stubEnv("SUPABASE_SECRET_KEY", "sb_secret_test");
+    vi.stubEnv("SUPABASE_SERVICE_ROLE_KEY", "");
+    expect(hasSupabaseConfig()).toBe(true);
+  });
+
+  it("keeps the legacy service-role variable as a migration fallback", () => {
+    vi.stubEnv("NEXT_PUBLIC_SUPABASE_URL", "https://project.supabase.co");
+    vi.stubEnv("SUPABASE_SECRET_KEY", "");
+    vi.stubEnv("SUPABASE_SERVICE_ROLE_KEY", "legacy-test-key");
+    expect(hasSupabaseConfig()).toBe(true);
   });
 });
 

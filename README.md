@@ -32,9 +32,9 @@ RecoverOS verifies the raw-body HMAC and requires `x-razorpay-event-id`. It reso
 
 ## Supabase control plane
 
-Apply `supabase/migrations/002_recoveros_control_plane.sql`, then set `NEXT_PUBLIC_SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY`. The migration provides version-checked atomic transitions, atomic webhook deduplication, row-level security, service-role-only RPC execution, and update/delete blockers for audit events and approval receipts.
+Apply `supabase/migrations/002_recoveros_control_plane.sql`, then set `NEXT_PUBLIC_SUPABASE_URL` and `SUPABASE_SECRET_KEY`. `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` is reserved for future browser-side authenticated features; the current incident room uses only the server client. The migration provides version-checked atomic transitions, atomic webhook deduplication, row-level security, server-secret-only RPC execution, and update/delete blockers for audit events and approval receipts.
 
-Never expose `SUPABASE_SERVICE_ROLE_KEY`, Razorpay secrets, the operator session secret, or the Gemini key to the browser.
+Never expose `SUPABASE_SECRET_KEY`, Razorpay secrets, the operator session secret, or the Gemini key to the browser.
 
 ## Evidence and verification
 

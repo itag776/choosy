@@ -46,7 +46,7 @@ export function createInitialRun(now = new Date(), runId = DEFAULT_RUN_ID): Stor
       gemini: Boolean(process.env.GEMINI_API_KEY),
       razorpay: Boolean(process.env.RAZORPAY_KEY_ID && process.env.RAZORPAY_KEY_SECRET),
       webhookSecret: Boolean(process.env.RAZORPAY_WEBHOOK_SECRET),
-      persistence: process.env.NEXT_PUBLIC_SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY ? "supabase" : "local_file",
+      persistence: process.env.NEXT_PUBLIC_SUPABASE_URL && (process.env.SUPABASE_SECRET_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY) ? "supabase" : "local_file",
     },
     dataset: { name: fixture.manifest.name, version: fixture.manifest.version, seed: fixture.manifest.seed, manifestHash: fixture.manifestHash, totalAttempts: fixture.manifest.totalAttempts, holdoutPercent: fixture.manifest.holdoutPercent },
     createdAt, updatedAt: createdAt,
