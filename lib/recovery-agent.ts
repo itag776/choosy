@@ -1,9 +1,39 @@
-import { Agent, run, tool } from "@openai/agents";
+import { Agent, OpenAIProvider, Runner, tool } from "@openai/agents";
 import { z } from "zod";
 import { AVAILABLE_ACTIONS, MERCHANT_POLICY } from "@/lib/policy";
 import type { CanaryResult, CandidatePlaybook, IncidentEvidence, InvestigationResult, PaymentAttempt, PromotionRecommendation, ToolEvidence } from "@/lib/types";
 
-export const PINNED_AGENT_MODEL = "gpt-5.4-mini-2026-03-17";
+export const PINNED_AGENT_MODEL = "gemini-3.5-flash-lite";
+const GEMINI_OPENAI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/";
+const GEMINI_RUN_TIMEOUT_MS = 30_000;
+let geminiRunner: Runner | undefined;
+
+function getGeminiRunner(): Runner | null {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) return null;
+  geminiRunner ??= new Runner({
+    modelProvider: new OpenAIProvider({
+      apiKey,
+      baseURL: GEMINI_OPENAI_BASE_URL,
+      useResponses: false,
+      strictFeatureValidation: true,
+    }),
+    tracingDisabled: true,
+    traceIncludeSensitiveData: false,
+  });
+  return geminiRunner;
+}
+
+async function withTransientRetry<T>(operation: () => Promise<T>): Promise<T> {
+  try {
+    return await operation();
+  } catch (error) {
+    const status = typeof error === "object" && error && "status" in error ? Number(error.status) : undefined;
+    if (status !== 429 && status !== 503) throw error;
+    await new Promise((resolve) => setTimeout(resolve, 800));
+    return operation();
+  }
+}
 const REQUIRED_INVESTIGATION_TOOLS = [
   "getIncidentEvidence", "readMerchantRecoveryPolicy", "listEligibleCases",
   "inspectAvailableActions", "compareFailureExplanations",
@@ -39,6 +69,33 @@ const PromotionSchema = z.object({
   uncertainty: z.string().min(10),
   stoppingConditions: z.array(z.string().min(5)).min(2).max(5),
 });
+
+function parseModelJson<T>(value: unknown, schema: z.ZodType<T>, normalize: (parsed: unknown) => unknown = (parsed) => parsed): T {
+  if (typeof value !== "string") throw new Error("Gemini returned a non-text final answer.");
+  const firstBrace = value.indexOf("{");
+  const lastBrace = value.lastIndexOf("}");
+  if (firstBrace < 0 || lastBrace <= firstBrace) throw new Error("Gemini did not return a JSON object.");
+  return schema.parse(normalize(JSON.parse(value.slice(firstBrace, lastBrace + 1))));
+}
+
+function normalizeInvestigationOutput(value: unknown): unknown {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+  const record = value as Record<string, unknown>;
+  if (!record.playbooks || typeof record.playbooks !== "object") return value;
+  const playbooks = Array.isArray(record.playbooks)
+    ? record.playbooks
+    : Object.values(record.playbooks as Record<string, unknown>);
+  return {
+    ...record,
+    playbooks: playbooks.map((playbook) => {
+      if (!playbook || typeof playbook !== "object" || Array.isArray(playbook)) return playbook;
+      const candidate = playbook as Record<string, unknown>;
+      const canonicalId = candidate.action === "retry_original" ? "wait_retry" :
+        candidate.action === "payment_link" ? "alternate_link" : candidate.id;
+      return { ...candidate, id: canonicalId };
+    }),
+  };
+}
 
 function fallbackPlaybooks(incident: IncidentEvidence): CandidatePlaybook[] {
   const cohort = `Eligible ${incident.cohort.issuer} ${incident.cohort.method} failures`;
@@ -113,7 +170,8 @@ function validInvestigation(output: z.infer<typeof InvestigationSchema>, tools: 
 
 export async function investigateIncident(input: { incident: IncidentEvidence; eligible: PaymentAttempt[] }): Promise<InvestigationResult> {
   const fallback = fallbackInvestigation(input.incident, input.eligible.length);
-  if (!process.env.OPENAI_API_KEY) return fallback;
+  const runner = getGeminiRunner();
+  if (!runner) return fallback;
 
   const tools = [
     tool({ name: "getIncidentEvidence", description: "Return measured incident evidence.", parameters: z.object({ incidentId: z.string() }), execute: async () => input.incident }),
@@ -124,24 +182,29 @@ export async function investigateIncident(input: { incident: IncidentEvidence; e
   ];
 
   const agent = new Agent({
-    name: "RecoverOS Incident Commander", model: PINNED_AGENT_MODEL, tools, outputType: InvestigationSchema,
-    instructions: `Investigate a payment incident. Call all five tools before answering. Return exactly two bounded playbooks: wait_retry and alternate_link. Preserve every amount, use only supported methods, never target ineligible customers, and be explicit about uncertainty. Do not claim simulated money is real revenue.`,
+    name: "RecoverOS Incident Commander", model: PINNED_AGENT_MODEL, tools,
+    modelSettings: {
+      reasoning: { effort: "minimal" },
+      parallelToolCalls: true,
+      temperature: 0,
+    },
+    instructions: `Investigate a payment incident. Call all five independent tools together in the first turn, then answer with only one valid JSON object and no markdown. The object must have primaryHypothesis (string), supportingEvidence (2-6 strings), rejectedHypotheses (1-5 strings), uncertainty (string), eligibleCaseCount (integer), and playbooks. playbooks MUST be a JSON array in square brackets containing exactly two objects, with ids wait_retry and alternate_link. Each playbook must include name, action (retry_original or payment_link), timingMinutes, enabledMethods (an array containing only card, upi, or netbanking), targetCohort, rationale, risks (1-4 strings), contactCount (0 or 1), and amountPolicy exactly preserve_original. Preserve every amount, use only supported methods, never target ineligible customers, and be explicit about uncertainty. Do not claim simulated money is real revenue.`,
   });
 
   try {
-    const result = await run(agent, `Investigate ${input.incident.id} for merchant_demo.`, {
-      maxTurns: 6, signal: AbortSignal.timeout(20_000),
-    });
+    const result = await withTransientRetry(() => runner.run(agent, `Investigate ${input.incident.id} for merchant_demo.`, {
+      maxTurns: 4, signal: AbortSignal.timeout(GEMINI_RUN_TIMEOUT_MS),
+    }));
     if (!result.finalOutput) return fallback;
-    const parsed = InvestigationSchema.parse(result.finalOutput);
+    const parsed = parseModelJson(result.finalOutput, InvestigationSchema, normalizeInvestigationOutput);
     const toolEvents = captureToolEvents(result);
     if (!validInvestigation(parsed, toolEvents, input.eligible.length)) return fallback;
     return {
-      mode: "openai_agent", model: PINNED_AGENT_MODEL, ...parsed, toolEvents,
+      mode: "gemini_agent", model: PINNED_AGENT_MODEL, ...parsed, toolEvents,
       responseId: result.lastResponseId, semanticValidation: "passed",
     };
   } catch (error) {
-    console.error("RecoverOS investigation fallback", error);
+    console.error("RecoverOS Gemini investigation fallback", error);
     return fallback;
   }
 }
@@ -166,28 +229,30 @@ export function fallbackPromotion(canary: CanaryResult): PromotionRecommendation
 
 export async function evaluatePromotion(canary: CanaryResult): Promise<PromotionRecommendation> {
   const fallback = fallbackPromotion(canary);
-  if (!process.env.OPENAI_API_KEY) return fallback;
+  const runner = getGeminiRunner();
+  if (!runner) return fallback;
   const getCanaryResults = tool({
     name: "getCanaryResults", description: "Read persisted canary assignments and measured results.",
     parameters: z.object({ campaignId: z.string() }), execute: async () => canary,
   });
   const agent = new Agent({
-    name: "RecoverOS Incident Commander", model: PINNED_AGENT_MODEL, tools: [getCanaryResults], outputType: PromotionSchema,
-    instructions: "Call getCanaryResults. Recommend promote, extend_canary, stop, or escalate. Never treat a 12-case canary as statistically conclusive. If promoting, select only the measured winner and preserve stopping conditions.",
+    name: "RecoverOS Incident Commander", model: PINNED_AGENT_MODEL, tools: [getCanaryResults],
+    modelSettings: { reasoning: { effort: "minimal" }, temperature: 0 },
+    instructions: "Call getCanaryResults, then answer with only one valid JSON object and no markdown. Include recommendation (promote, extend_canary, stop, or escalate), playbookId (wait_retry, alternate_link, or null), evidence (2-6 strings), reason, uncertainty, and stoppingConditions (2-5 strings). Never treat a 12-case canary as statistically conclusive. If promoting, select only the measured winner and preserve stopping conditions.",
   });
   try {
-    const result = await run(agent, "Evaluate the completed canary for promotion.", {
-      maxTurns: 4, signal: AbortSignal.timeout(20_000),
-    });
+    const result = await withTransientRetry(() => runner.run(agent, "Evaluate the completed canary for promotion.", {
+      maxTurns: 3, signal: AbortSignal.timeout(GEMINI_RUN_TIMEOUT_MS),
+    }));
     if (!result.finalOutput) return fallback;
-    const parsed = PromotionSchema.parse(result.finalOutput);
+    const parsed = parseModelJson(result.finalOutput, PromotionSchema);
     const toolEvents = captureToolEvents(result);
     const valid = toolEvents.some((item) => item.name === "getCanaryResults") &&
       (parsed.recommendation !== "promote" || parsed.playbookId === canary.winnerId);
     if (!valid) return fallback;
-    return { mode: "openai_agent", model: PINNED_AGENT_MODEL, ...parsed, toolEvents, responseId: result.lastResponseId, semanticValidation: "passed" };
+    return { mode: "gemini_agent", model: PINNED_AGENT_MODEL, ...parsed, toolEvents, responseId: result.lastResponseId, semanticValidation: "passed" };
   } catch (error) {
-    console.error("RecoverOS promotion fallback", error);
+    console.error("RecoverOS Gemini promotion fallback", error);
     return fallback;
   }
 }

@@ -22,7 +22,7 @@ npm run dev
 
 Open `http://localhost:3000`. In development, sign in as `operator_judge` with `recoveros-demo`. Production has no fallback credentials and fails closed unless both operator-auth variables are configured.
 
-The complete replay works without third-party credentials using a visibly labelled deterministic fallback. Add `OPENAI_API_KEY` to use the OpenAI Agents SDK path pinned in code. Without Supabase, isolated run snapshots are atomically stored under the operating-system temporary directory; this is a development convenience, not the production control plane.
+The complete replay works without third-party credentials using a visibly labelled deterministic fallback. Add `GEMINI_API_KEY` to use the free-tier Gemini model through the Agents SDK's OpenAI-compatible provider path pinned in code. Without Supabase, isolated run snapshots are atomically stored under the operating-system temporary directory; this is a development convenience, not the production control plane.
 
 ## Razorpay Test Mode
 
@@ -34,7 +34,7 @@ RecoverOS verifies the raw-body HMAC and requires `x-razorpay-event-id`. It reso
 
 Apply `supabase/migrations/002_recoveros_control_plane.sql`, then set `NEXT_PUBLIC_SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY`. The migration provides version-checked atomic transitions, atomic webhook deduplication, row-level security, service-role-only RPC execution, and update/delete blockers for audit events and approval receipts.
 
-Never expose `SUPABASE_SERVICE_ROLE_KEY`, Razorpay secrets, the operator session secret, or the OpenAI key to the browser.
+Never expose `SUPABASE_SERVICE_ROLE_KEY`, Razorpay secrets, the operator session secret, or the Gemini key to the browser.
 
 ## Evidence and verification
 
@@ -51,4 +51,4 @@ See [architecture](ARCHITECTURE.md), [threat model](THREAT_MODEL.md), [evaluatio
 
 ## Integration status
 
-Live OpenAI, Razorpay, webhook, Supabase, deployment, and video values are intentionally not fabricated. The incident-room rail reports each configured system independently. Complete the remaining owner-only setup in `SUBMISSION.md` before judging.
+Live Gemini, Razorpay, webhook, Supabase, deployment, and video values are intentionally not fabricated. The incident-room rail reports each configured system independently. Complete the remaining owner-only setup in `SUBMISSION.md` before judging.

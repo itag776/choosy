@@ -230,7 +230,7 @@ function PlaybookCard({ playbook, index }: { playbook: CandidatePlaybook; index:
 function StrategyScene({ state }: { state: RecoveryRunSnapshot }) {
   const result=state.investigation!;
   return <div className="scene strategy-scene">
-    <SceneKicker index="04" label="STRATEGY + POLICY" provenance={result.mode==="openai_agent"?"OPENAI AGENT":"SAFE FALLBACK"} />
+    <SceneKicker index="04" label="STRATEGY + POLICY" provenance={result.mode==="gemini_agent"?"GEMINI AGENT":"SAFE FALLBACK"} />
     <div className="hypothesis"><span>WORKING HYPOTHESIS</span><h1>{result.primaryHypothesis}</h1><p>{result.uncertainty}</p></div>
     <div className="playbook-grid">{result.playbooks.map((playbook,index)=><PlaybookCard key={playbook.id} playbook={playbook} index={index}/>)}</div>
     <div className="policy-verdict"><div><ShieldCheck size={18}/><span><b>{state.policyDecision?.outcome.replaceAll("_"," ")}</b>Deterministic code—not the model—controls execution.</span></div><strong>{state.policyDecision?.checkedRules.length} RULES</strong></div>
@@ -329,7 +329,7 @@ function DecisionRail({state,action,busy,perform}:{state:RecoveryRunSnapshot;act
 
     <section className="rail-section integrations">
       <header><span>LIVE SYSTEMS</span><b>{state.integration.persistence==="supabase"?"DURABLE":"PREVIEW"}</b></header>
-      <Integration label="OpenAI agent" active={state.integration.openai}/>
+      <Integration label="Gemini agent" active={state.integration.gemini}/>
       <Integration label="Razorpay Test Mode" active={state.integration.razorpay}/>
       <Integration label="Signed webhook" active={state.integration.webhookSecret}/>
       <Integration label="Supabase control plane" active={state.integration.persistence==="supabase"}/>

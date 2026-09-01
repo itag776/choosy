@@ -80,7 +80,7 @@ export interface ToolEvidence {
 }
 
 export interface InvestigationResult {
-  mode: "openai_agent" | "deterministic_fallback";
+  mode: "gemini_agent" | "deterministic_fallback";
   model: string;
   primaryHypothesis: string;
   supportingEvidence: string[];
@@ -120,7 +120,7 @@ export interface CanaryResult {
 }
 
 export interface PromotionRecommendation {
-  mode: "openai_agent" | "deterministic_fallback";
+  mode: "gemini_agent" | "deterministic_fallback";
   model: string;
   recommendation: "promote" | "extend_canary" | "stop" | "escalate";
   playbookId: PlaybookId | null;
@@ -252,7 +252,7 @@ export interface RecoveryRunSnapshot {
   approvals: ApprovalReceipt[];
   commandReceipts: CommandReceipt[];
   integration: {
-    openai: boolean;
+    gemini: boolean;
     razorpay: boolean;
     webhookSecret: boolean;
     persistence: "supabase" | "local_file";

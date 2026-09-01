@@ -26,7 +26,7 @@ These values are deliberately placeholders so the submission never claims a depl
 
 ## Final owner checklist
 
-- [ ] Configure OpenAI, Razorpay Test Mode, webhook secret, Supabase, and production operator auth.
+- [ ] Configure Gemini, Razorpay Test Mode, webhook secret, Supabase, and production operator auth.
 - [ ] Apply the Supabase migration and verify all four UI integration indicators.
 - [ ] Deploy over HTTPS and replace the live-demo placeholder above.
 - [ ] Record a clean 90-second video and replace the video placeholder above.

@@ -60,7 +60,7 @@ class LocalFileRepository implements RunRepository {
   async get(runId: string): Promise<StoredRecoveryRun> {
     const run = await readLocal(runId);
     run.integration = {
-      openai: Boolean(process.env.OPENAI_API_KEY),
+      gemini: Boolean(process.env.GEMINI_API_KEY),
       razorpay: Boolean(process.env.RAZORPAY_KEY_ID && process.env.RAZORPAY_KEY_SECRET),
       webhookSecret: Boolean(process.env.RAZORPAY_WEBHOOK_SECRET),
       persistence: "local_file",
@@ -121,7 +121,7 @@ class SupabaseRunRepository implements RunRepository {
     }
     const run = data.snapshot as StoredRecoveryRun;
     if (!verifyAuditChain(run.audit)) throw new Error("Recovery audit hash chain verification failed.");
-    run.integration = { openai: Boolean(process.env.OPENAI_API_KEY), razorpay: Boolean(process.env.RAZORPAY_KEY_ID && process.env.RAZORPAY_KEY_SECRET), webhookSecret: Boolean(process.env.RAZORPAY_WEBHOOK_SECRET), persistence: "supabase" };
+    run.integration = { gemini: Boolean(process.env.GEMINI_API_KEY), razorpay: Boolean(process.env.RAZORPAY_KEY_ID && process.env.RAZORPAY_KEY_SECRET), webhookSecret: Boolean(process.env.RAZORPAY_WEBHOOK_SECRET), persistence: "supabase" };
     return run;
   }
 

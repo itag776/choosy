@@ -43,7 +43,7 @@ export function createInitialRun(now = new Date(), runId = DEFAULT_RUN_ID): Stor
     ledger: { simulatedAmountPaise: 0, baselineAmountPaise: 0, razorpayTestAmountPaise: 0, simulatedCases: 0, baselineCases: 0, testModeCases: 0, simulatedContacts: 0, baselineContacts: 0 }, campaignEvents: [],
     metrics: runLockedBenchmark(), audit: [], approvals: [], commandReceipts: [], payments: [], processedWebhookIds: [],
     integration: {
-      openai: Boolean(process.env.OPENAI_API_KEY),
+      gemini: Boolean(process.env.GEMINI_API_KEY),
       razorpay: Boolean(process.env.RAZORPAY_KEY_ID && process.env.RAZORPAY_KEY_SECRET),
       webhookSecret: Boolean(process.env.RAZORPAY_WEBHOOK_SECRET),
       persistence: process.env.NEXT_PUBLIC_SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY ? "supabase" : "local_file",

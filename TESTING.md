@@ -37,4 +37,4 @@ After the project owner configures integrations:
 
 ## Production preflight
 
-Use HTTPS; set both operator-auth variables; confirm the four integration indicators independently; verify no `SUPABASE_SERVICE_ROLE_KEY`, Razorpay secret, OpenAI key, or session secret appears in browser bundles or logs; and use only synthetic/Test Mode data during judging.
+Use HTTPS; set both operator-auth variables; confirm the four integration indicators independently; verify no `SUPABASE_SERVICE_ROLE_KEY`, Razorpay secret, Gemini key, or session secret appears in browser bundles or logs; and use only synthetic/Test Mode data during judging.

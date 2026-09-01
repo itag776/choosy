@@ -175,7 +175,7 @@ export async function executeRunCommand(runId: string, input: RunCommandRequest,
       }, [...toolEvents, {
         kind: "agent", title: "Two bounded recovery strategies proposed",
         detail: investigation.primaryHypothesis,
-        actor: "agent", status: investigation.mode === "openai_agent" ? "success" : "warning",
+        actor: "agent", status: investigation.mode === "gemini_agent" ? "success" : "warning",
         evidence: { model: investigation.model, responseId: investigation.responseId ?? null, semanticValidation: investigation.semanticValidation },
       }, {
         kind: "policy", title: policyDecision.outcome === "require_approval" ? "Human approval required" : "Policy decision recorded",

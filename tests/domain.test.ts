@@ -130,7 +130,7 @@ describe("policy boundary", () => {
 
 describe("versioned command state machine", () => {
   beforeEach(() => {
-    vi.stubEnv("OPENAI_API_KEY", "");
+    vi.stubEnv("GEMINI_API_KEY", "");
     repository = new MemoryRepository();
     setRunRepositoryForTests(repository);
   });

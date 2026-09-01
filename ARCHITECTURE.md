@@ -34,7 +34,7 @@ Each successful login creates a cryptographically random `run_<24 hex>` identifi
 
 ## Agent boundary
 
-The investigator receives five typed, read-only tools and must return schema-valid investigation or promotion data. It does not receive Razorpay credentials or repository mutation tools. A deterministic fallback keeps the demo usable when OpenAI is absent or times out; the UI labels which path ran.
+The investigator receives five typed, read-only tools and must return schema-valid investigation or promotion data. Gemini runs through an OpenAI-compatible Chat Completions provider and does not receive Razorpay credentials or repository mutation tools. A deterministic fallback keeps the demo usable when Gemini is absent, rate-limited, or times out; the UI labels which path ran.
 
 ## Recovery execution
 
