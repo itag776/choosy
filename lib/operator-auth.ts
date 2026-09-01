@@ -15,12 +15,12 @@ export function authIsConfigured(): boolean {
 
 function accessCode(): string | null {
   if (process.env.RECOVEROS_OPERATOR_ACCESS_CODE) return process.env.RECOVEROS_OPERATOR_ACCESS_CODE.length >= 12 ? process.env.RECOVEROS_OPERATOR_ACCESS_CODE : null;
-  return process.env.NODE_ENV === "production" ? null : "recoveros-demo";
+  return process.env.NODE_ENV === "production" ? null : "kept-demo";
 }
 
 function sessionSecret(): string | null {
   if (process.env.RECOVEROS_SESSION_SECRET) return process.env.RECOVEROS_SESSION_SECRET.length >= 32 ? process.env.RECOVEROS_SESSION_SECRET : null;
-  return process.env.NODE_ENV === "production" ? null : "recoveros-local-development-session-secret-v1";
+  return process.env.NODE_ENV === "production" ? null : "kept-local-development-session-secret-v1";
 }
 
 function safeEqual(left: string, right: string): boolean {

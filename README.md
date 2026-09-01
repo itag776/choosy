@@ -1,6 +1,8 @@
-# RecoverOS Canary Commander
+# Kept
 
-RecoverOS is a governed revenue-recovery incident room for Razorpay Buildathon Track 03. It detects payment degradation, asks a bounded AI investigator for evidence-backed options, enforces merchant policy in deterministic code, requires two authenticated human approvals, compares recovery strategies on a replay canary, and proves the final provider boundary with a correlated Razorpay Test Mode payment.
+**Revenue that doesn't slip away.**
+
+Kept is a governed revenue-recovery agent for Razorpay Buildathon Track 03. It detects payment degradation, investigates the evidence, enforces merchant policy in deterministic code, requires two authenticated human approvals, compares recovery strategies on a replay canary, and proves the final provider boundary with a correlated Razorpay Test Mode payment.
 
 The product keeps three claims separate:
 
@@ -20,7 +22,7 @@ cp .env.example .env.local
 npm run dev
 ```
 
-Open `http://localhost:3000`. In development, sign in as `operator_judge` with `recoveros-demo`. Production has no fallback credentials and fails closed unless both operator-auth variables are configured.
+Open `http://localhost:3000`. In development, sign in as `operator_judge` with `kept-demo`. Production has no fallback credentials and fails closed unless both operator-auth variables are configured.
 
 The complete replay works without third-party credentials using a visibly labelled deterministic fallback. Add `GEMINI_API_KEY` to use the free-tier Gemini model through the Agents SDK's OpenAI-compatible provider path pinned in code. Without Supabase, isolated run snapshots are atomically stored under the operating-system temporary directory; this is a development convenience, not the production control plane.
 
@@ -28,7 +30,7 @@ The complete replay works without third-party credentials using a visibly labell
 
 Add Test Mode credentials and a webhook secret to `.env.local`, then configure `https://YOUR_HOST/api/webhooks/razorpay` for `payment.captured`, `payment.failed`, and `payment_link.paid`.
 
-RecoverOS verifies the raw-body HMAC and requires `x-razorpay-event-id`. It resolves the run only from correlation metadata placed in the Payment Link, then requires the provider Payment Link ID and reference ID to match the persisted external-action intent. An unrelated signed event cannot capture the run. Event IDs are deduplicated and a late failure cannot regress a paid state.
+Kept verifies the raw-body HMAC and requires `x-razorpay-event-id`. It resolves the run only from correlation metadata placed in the Payment Link, then requires the provider Payment Link ID and reference ID to match the persisted external-action intent. An unrelated signed event cannot capture the run. Event IDs are deduplicated and a late failure cannot regress a paid state.
 
 The production webhook endpoint is `https://recoveros-canary-commander.vercel.app/api/webhooks/razorpay`.
 

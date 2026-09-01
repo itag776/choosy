@@ -14,7 +14,7 @@ export async function POST(request: Request) {
     const payload = JSON.parse(rawBody) as Record<string, unknown>;
     const eventType = String(payload.event ?? "unknown");
     const runId = resolveWebhookRunId(payload);
-    if (!runId) return ok({ accepted: true, ignored: true, reason: "No RecoverOS run correlation was present." });
+    if (!runId) return ok({ accepted: true, ignored: true, reason: "No Kept run correlation was present." });
     const result = await processRazorpayWebhook({ eventId, eventType, rawBody, payload, runId });
     return ok({ accepted: true, ...result });
   } catch (error) {

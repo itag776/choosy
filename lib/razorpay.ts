@@ -67,7 +67,7 @@ export async function createOrReconcilePaymentLink(action: ExternalAction): Prom
       headers: { Authorization: authHeader(), "Content-Type": "application/json" },
       body: JSON.stringify({
         amount: action.amountPaise, currency: "INR", reference_id: action.referenceId,
-        description: "RecoverOS approved Test Mode recovery",
+        description: "Kept approved Test Mode recovery",
         expire_by: Math.floor(Date.now() / 1000) + 3_600, reminder_enable: false,
         notes: {
           recoveros_run_id: action.runId,

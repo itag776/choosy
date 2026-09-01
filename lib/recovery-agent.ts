@@ -182,7 +182,7 @@ export async function investigateIncident(input: { incident: IncidentEvidence; e
   ];
 
   const agent = new Agent({
-    name: "RecoverOS Incident Commander", model: PINNED_AGENT_MODEL, tools,
+    name: "Kept Recovery Agent", model: PINNED_AGENT_MODEL, tools,
     modelSettings: {
       reasoning: { effort: "minimal" },
       parallelToolCalls: true,
@@ -204,7 +204,7 @@ export async function investigateIncident(input: { incident: IncidentEvidence; e
       responseId: result.lastResponseId, semanticValidation: "passed",
     };
   } catch (error) {
-    console.error("RecoverOS Gemini investigation fallback", error);
+    console.error("Kept Gemini investigation fallback", error);
     return fallback;
   }
 }
@@ -255,7 +255,7 @@ export async function evaluatePromotion(canary: CanaryResult): Promise<Promotion
     parameters: z.object({ campaignId: z.string() }), execute: async () => canary,
   });
   const agent = new Agent({
-    name: "RecoverOS Incident Commander", model: PINNED_AGENT_MODEL, tools: [getCanaryResults],
+    name: "Kept Recovery Agent", model: PINNED_AGENT_MODEL, tools: [getCanaryResults],
     modelSettings: { reasoning: { effort: "minimal" }, temperature: 0 },
     instructions: "Call getCanaryResults, then answer with only one valid JSON object and no markdown. Include recommendation (promote, extend_canary, stop, or escalate), playbookId (wait_retry, alternate_link, or null), evidence (2-6 strings), reason, uncertainty, and stoppingConditions (2-5 strings). Here, promote means only a human-approved expansion inside the deterministic synthetic replay; it never means a real-money rollout. Recommend promote when the committed 6-versus-6 replay is complete, the declared winner has both more recoveries and more recovered value than the challenger, and liftMultiple is above 1. Otherwise recommend extend_canary, stop, or escalate. Never call twelve cases statistically conclusive. If promoting, select only the measured winner and preserve stopping conditions.",
   });
@@ -273,7 +273,7 @@ export async function evaluatePromotion(canary: CanaryResult): Promise<Promotion
     if (!valid) return fallback;
     return { mode: "gemini_agent", model: PINNED_AGENT_MODEL, ...parsed, toolEvents, responseId: result.lastResponseId, semanticValidation: "passed" };
   } catch (error) {
-    console.error("RecoverOS Gemini promotion fallback", error);
+    console.error("Kept Gemini promotion fallback", error);
     return fallback;
   }
 }

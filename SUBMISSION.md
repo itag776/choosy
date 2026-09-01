@@ -2,10 +2,10 @@
 
 ## Project
 
-**Title:** RecoverOS Canary Commander
+**Title:** Kept
 
 **Track:** AI Revenue Recovery
-**One line:** A governed AI incident commander that finds payment revenue at risk, tests the safest recovery action, requires accountable human approval, and proves the provider boundary in Razorpay Test Mode.
+**One line:** Kept finds revenue at risk, tests the safest recovery, and wins it back—with every consequential step human-approved and measurable.
 
 ## Links
 
@@ -38,4 +38,4 @@ The video remains a deliberate placeholder so the submission never claims a reco
 
 ## Judge-facing truth statement
 
-RecoverOS demonstrates governed orchestration, replay measurement, and Razorpay Test Mode integration. Replay recoveries are synthetic; Test Mode recovery is sandbox-only. The audit chain is tamper-evident, while Supabase evidence rows are protected from update/delete. The detector score is heuristic. No production lift or real merchant revenue is claimed.
+Kept demonstrates governed orchestration, replay measurement, and Razorpay Test Mode integration. Replay recoveries are synthetic; Test Mode recovery is sandbox-only. The audit chain is tamper-evident, while Supabase evidence rows are protected from update/delete. The detector score is heuristic. No production lift or real merchant revenue is claimed.

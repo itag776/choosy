@@ -28,14 +28,14 @@ export default function OperatorLogin({ productionReady }: { productionReady: bo
 
   return <main className="login-shell">
     <section className="login-card">
-      <div className="brand login-brand"><span className="brand-mark">R<span>OS</span></span><div><b>RecoverOS</b><small>Canary Commander</small></div></div>
+      <div className="brand login-brand" aria-label="Kept"><b className="brand-word">kept</b><span className="brand-dot" /></div>
       <div className="login-icon"><LockKeyhole size={28}/></div>
       <span className="login-kicker">AUTHENTICATED CONTROL PLANE</span>
       <h1>Operator clearance required.</h1>
       <p>Every approval is bound to an authenticated operator, an isolated recovery run, and the exact evidence version reviewed.</p>
       <form onSubmit={login}>
         <label>Operator ID<input name="actorId" defaultValue="operator_judge" pattern="operator_[a-z0-9_-]{2,32}" required autoComplete="username"/></label>
-        <label>Access code<input name="accessCode" type="password" required autoComplete="current-password" placeholder={productionReady ? "Configured by deployment owner" : "Local code: recoveros-demo"}/></label>
+        <label>Access code<input name="accessCode" type="password" required autoComplete="current-password" placeholder={productionReady ? "Configured by deployment owner" : "Local code: kept-demo"}/></label>
         {error&&<p className="login-error">{error}</p>}
         <button disabled={busy}>{busy?<LoaderCircle className="spin" size={17}/>:<ShieldCheck size={17}/>} {busy?"Opening isolated run":"Enter incident room"}</button>
       </form>

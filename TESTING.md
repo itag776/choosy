@@ -18,7 +18,7 @@ Expected result: every command exits zero. `npm test` covers detector/cohort beh
 
 1. Copy `.env.example` to `.env.local` and run `npm run dev`.
 2. Open `http://localhost:3000` in two private browser windows.
-3. In each window sign in with a distinct operator ID and local access code `recoveros-demo`.
+3. In each window sign in with a distinct operator ID and local access code `kept-demo`.
 4. Confirm that the two browser/API sessions use different run IDs and actions in one window do not move the other.
 5. Complete: Inject → Investigate → Approve canary → Run canary → Evaluate → Approve promotion.
 6. Expand the evidence drawer. Confirm two approvals, unique receipt digests, a changing audit hash, 160 evaluation windows, and six policy attacks.

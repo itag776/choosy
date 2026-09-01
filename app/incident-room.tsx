@@ -37,7 +37,7 @@ type PrimaryAction = { command: RunCommand; label: string; hint: string; icon: t
 function primaryAction(state: RecoveryRunSnapshot): PrimaryAction | null {
   switch (state.phase) {
     case "idle": return { command: "inject_incident", label: "Inject replay incident", hint: "Stream the hash-verified fixture into the detector", icon: Play };
-    case "incident_detected": return { command: "investigate", label: "Deploy Incident Commander", hint: "Require five typed evidence reads", icon: Bot };
+    case "incident_detected": return { command: "investigate", label: "Investigate with Kept", hint: "Read five independent evidence sources", icon: Bot };
     case "awaiting_canary_approval": return { command: "approve_canary", label: "Approve 12-case canary", hint: "Authorize a replay-only 6 × 6 experiment", icon: LockKeyhole };
     case "canary_approved": return { command: "run_canary", label: "Run randomized canary", hint: "Commit assignments before reading outcomes", icon: FlaskConical };
     case "canary_complete": return { command: "evaluate_promotion", label: "Evaluate promotion", hint: "Ask the agent to judge persisted results", icon: Bot };
@@ -112,7 +112,7 @@ export default function IncidentRoom({ initialState, operator }: { initialState:
     <main className="incident-room">
       <div className="ambient-grid" aria-hidden="true" />
       <header className="topbar">
-        <div className="brand"><span className="brand-mark">R<span>OS</span></span><div><b>RecoverOS</b><small>Canary Commander</small></div></div>
+        <div className="brand" aria-label="Kept"><b className="brand-word">kept</b><span className="brand-dot" /></div>
         <div className="incident-breadcrumb"><span>INCIDENT ROOM</span><i /><b>{state.incident?.id ?? "STANDBY"}</b></div>
         <div className="environment">
           <span className="env-pill"><FlaskConical size={12} /> REPLAY + TEST MODE</span>
@@ -182,7 +182,7 @@ function CalmScene({ state }: { state: RecoveryRunSnapshot }) {
   return <div className="scene calm-scene">
     <SceneKicker index="00" label="OPERATING BASELINE" provenance="VERIFIED FIXTURE" />
     <div className="calm-grid">
-      <div className="calm-copy"><span className="status-line"><i /> PAYMENT SYSTEM NOMINAL</span><h1>Quiet systems.<br/><em>Ready judgment.</em></h1><p>RecoverOS watches payment health, isolates revenue at risk, and tests recovery actions before any campaign earns permission to expand.</p></div>
+      <div className="calm-copy"><span className="status-line"><i /> PAYMENT SYSTEM NOMINAL</span><h1>Quiet systems.<br/><em>Ready judgment.</em></h1><p>Kept finds revenue at risk, tests the safest recovery, and wins it back without bypassing human judgment.</p></div>
       <div className="baseline-orbit"><span>SUCCESS RATE / 15 MIN</span><strong>96.4<sup>%</sup></strong><div className="baseline-bars">{[62,68,66,72,70,76,74,79,73,77,75,78].map((height, index)=><i key={index} style={{height:`${height}%`}} />)}</div><small>TRAILING BASELINE · NO ACTIVE INCIDENT</small></div>
     </div>
     <div className="truth-ribbon"><Metric label="Replay records" value={String(state.dataset.totalAttempts)} detail="SHA-256 MANIFEST" /><Metric label="Adversarial eval" value={String(state.metrics.evaluatedCases)} detail="GENERATED CASES" /><Metric label="Policy violations" value={String(state.metrics.policyViolations)} detail={`${state.metrics.safetyCases} ATTACKS`} /><Metric label="Live actions" value="0" detail="HUMAN GATED" /></div>
@@ -217,7 +217,7 @@ function IncidentScene({ state }: { state: RecoveryRunSnapshot }) {
 function InvestigatingScene() {
   return <div className="scene investigating-scene">
     <SceneKicker index="03" label="AGENT INVESTIGATION" provenance="BOUNDED AI" />
-    <div className="investigation-title"><span className="agent-glyph"><Bot size={30}/></span><div><span className="status-line violet"><i /> INCIDENT COMMANDER ACTIVE</span><h1>Evidence before action.</h1><p>The model cannot execute money movement. It must read five typed tools and return a schema-valid investigation.</p></div></div>
+    <div className="investigation-title"><span className="agent-glyph"><Bot size={30}/></span><div><span className="status-line violet"><i /> KEPT IS INVESTIGATING</span><h1>Evidence before action.</h1><p>Kept can read the evidence and recommend. It cannot approve or move money.</p></div></div>
     <div className="tool-flight">{["getIncidentEvidence","readMerchantRecoveryPolicy","listEligibleCases","inspectAvailableActions","compareFailureExplanations"].map((name,index)=><div key={name} style={{"--delay":`${index*110}ms`} as React.CSSProperties}><span>{String(index+1).padStart(2,"0")}</span><b>{name}</b><LoaderCircle className="spin" size={14}/></div>)}</div>
     <div className="boundary-note"><ShieldCheck size={16}/><span>Read-only tools · six-turn ceiling · 20-second timeout · deterministic fallback</span></div>
   </div>;
@@ -269,7 +269,7 @@ function CanaryResultScene({ state }: { state: RecoveryRunSnapshot }) {
       <ResultLane label="A" title="Timed issuer retry" result={wait.recovered} total={wait.attempted} rate={wait.conversionRate}/>
       <ResultLane label="B" title="Alternate-method link" result={alternate.recovered} total={alternate.attempted} rate={alternate.conversionRate} winner/>
     </div>
-    <div className="recommendation"><Bot size={18}/><div><span>INCIDENT COMMANDER</span><b>{state.promotion?.reason ?? "Canary complete. A second bounded evaluation is required before promotion."}</b></div><em>{state.promotion?.recommendation?.toUpperCase() ?? "WAITING"}</em></div>
+    <div className="recommendation"><Bot size={18}/><div><span>KEPT</span><b>{state.promotion?.reason ?? "Canary complete. One final review is required before expansion."}</b></div><em>{state.promotion?.recommendation?.toUpperCase() ?? "WAITING"}</em></div>
   </div>;
 }
 

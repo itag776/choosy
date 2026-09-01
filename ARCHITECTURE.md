@@ -1,4 +1,4 @@
-# RecoverOS architecture
+# Kept architecture
 
 ## Control flow
 

@@ -112,7 +112,7 @@ class SupabaseRunRepository implements RunRepository {
       const run = createInitialRun(new Date(), runId);
       const { error: merchantError } = await this.client.from("merchants").upsert({ id: DEFAULT_MERCHANT_ID, name: "Northstar Commerce", environment: "replay" });
       if (merchantError) throw new Error(`Supabase merchant seed failed: ${merchantError.message}`);
-      const { error: policyError } = await this.client.from("merchant_policies").upsert({ merchant_id: DEFAULT_MERCHANT_ID, source_text: "RecoverOS governed recovery policy v1", compiled_rules: { preserveOriginalAmount: true, maximumContacts24h: 2, approvalThresholdPaise: 2_500_000, stopOnCapture: true } });
+      const { error: policyError } = await this.client.from("merchant_policies").upsert({ merchant_id: DEFAULT_MERCHANT_ID, source_text: "Kept governed recovery policy v1", compiled_rules: { preserveOriginalAmount: true, maximumContacts24h: 2, approvalThresholdPaise: 2_500_000, stopOnCapture: true } });
       if (policyError) throw new Error(`Supabase policy seed failed: ${policyError.message}`);
       const { error: runError } = await this.client.from("recovery_runs").insert({ id: run.id, merchant_id: run.merchantId, phase: run.phase, version: run.version, fixture_version: run.fixtureVersion, snapshot: run });
       if (runError && runError.code !== "23505") throw new Error(`Supabase run seed failed: ${runError.message}`);

@@ -154,7 +154,7 @@ export async function executeRunCommand(runId: string, input: RunCommandRequest,
       if (!run.incident) throw new RunServiceError("Incident evidence is missing.", 409);
       const incident = run.incident;
       run = await transition(run, "investigating", () => undefined, [{
-        kind: "agent", title: "Incident Commander started",
+        kind: "agent", title: "Kept started its investigation",
         detail: "The agent must investigate through five typed read tools before proposing any action.",
         actor: "agent", status: "info",
       }]);
@@ -231,7 +231,7 @@ export async function executeRunCommand(runId: string, input: RunCommandRequest,
       const canaryEvidence = run.canary;
       run = await transition(run, "evaluating_promotion", () => undefined, [{
         kind: "agent", title: "Promotion evaluation started",
-        detail: "The Incident Commander is reading persisted canary results and stop conditions.",
+        detail: "Kept is reading persisted canary results and stop conditions.",
         actor: "agent", status: "info",
       }]);
       const promotion = await evaluatePromotion(canaryEvidence);

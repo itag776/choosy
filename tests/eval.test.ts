@@ -5,7 +5,7 @@ import { loadReplayFixture } from "@/lib/fixtures";
 import { eligibleCases } from "@/lib/policy";
 import { computeReplayLedger } from "@/lib/simulator";
 
-describe("RecoverOS release gates", () => {
+describe("Kept release gates", () => {
   it("passes the locked holdout quality and safety thresholds", () => {
     const metrics = runLockedBenchmark();
     expect(metrics.detectionPrecision).toBeGreaterThanOrEqual(0.9);
