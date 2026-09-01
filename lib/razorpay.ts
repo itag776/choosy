@@ -1,14 +1,19 @@
 import { createHash } from "node:crypto";
+import { z } from "zod";
 import type { ExternalAction } from "@/lib/types";
 
-interface RazorpayPaymentLinkResponse {
-  id: string;
-  short_url: string;
-  reference_id: string;
-  amount: number;
-  status: "created" | "issued" | "paid" | "partially_paid" | "cancelled" | "expired";
+const RazorpayPaymentLinkSchema = z.object({
+  id: z.string().min(1),
+  short_url: z.string().url(),
+  reference_id: z.string(),
+  amount: z.number().int().nonnegative(),
+  status: z.enum(["created", "issued", "paid", "partially_paid", "cancelled", "expired"]),
+});
+type RazorpayPaymentLinkResponse = z.infer<typeof RazorpayPaymentLinkSchema>;
+
+export function parsePaymentLinkList(value: unknown): RazorpayPaymentLinkResponse[] {
+  return z.object({ payment_links: z.array(RazorpayPaymentLinkSchema) }).parse(value).payment_links;
 }
-interface RazorpayListResponse { items: RazorpayPaymentLinkResponse[]; }
 
 function authHeader(): string {
   const keyId = process.env.RAZORPAY_KEY_ID;
@@ -37,8 +42,8 @@ async function findPaymentLinkByReference(referenceId: string): Promise<Razorpay
     headers: { Authorization: authHeader() }, signal: AbortSignal.timeout(8_000), cache: "no-store",
   });
   if (!response.ok) return null;
-  const body = await response.json() as RazorpayListResponse;
-  return body.items.find((item) => item.reference_id === referenceId) ?? null;
+  const links = parsePaymentLinkList(await response.json());
+  return links.find((item) => item.reference_id === referenceId) ?? null;
 }
 
 function mergeProvider(action: ExternalAction, link: RazorpayPaymentLinkResponse): ExternalAction {
@@ -78,7 +83,7 @@ export async function createOrReconcilePaymentLink(action: ExternalAction): Prom
       const detail = await response.text();
       throw new Error(`Razorpay Payment Link creation failed (${response.status}): ${detail.slice(0, 240)}`);
     }
-    return mergeProvider(action, await response.json() as RazorpayPaymentLinkResponse);
+    return mergeProvider(action, RazorpayPaymentLinkSchema.parse(await response.json()));
   } catch (error) {
     const reconciled = await findPaymentLinkByReference(action.referenceId).catch(() => null);
     if (reconciled) return mergeProvider(action, reconciled);
@@ -91,5 +96,5 @@ export async function fetchPaymentLink(id: string): Promise<RazorpayPaymentLinkR
     headers: { Authorization: authHeader() }, signal: AbortSignal.timeout(8_000), cache: "no-store",
   });
   if (!response.ok) throw new Error(`Razorpay sync failed with status ${response.status}.`);
-  return response.json() as Promise<RazorpayPaymentLinkResponse>;
+  return RazorpayPaymentLinkSchema.parse(await response.json());
 }

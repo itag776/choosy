@@ -5,8 +5,9 @@ import { createInitialRun, DEFAULT_RUN_ID, verifyAuditChain } from "@/lib/demo-d
 import { detectIncident } from "@/lib/detector";
 import { loadReplayFixture } from "@/lib/fixtures";
 import { eligibleCases, evaluatePlaybooks } from "@/lib/policy";
-import { fallbackInvestigation } from "@/lib/recovery-agent";
+import { fallbackInvestigation, fallbackPromotion, isDirectionallyPromotable } from "@/lib/recovery-agent";
 import { RepositoryConflictError, setRunRepositoryForTests, type RunRepository } from "@/lib/repository";
+import { parsePaymentLinkList } from "@/lib/razorpay";
 import { executeRunCommand, getRun, processRazorpayWebhook } from "@/lib/run-service";
 import { createCanaryAssignments, evaluateCanary } from "@/lib/simulator";
 import { hasSupabaseConfig } from "@/lib/supabase";
@@ -77,6 +78,18 @@ describe("verified replay truth", () => {
     expect(result.results.find((item) => item.playbookId === "wait_retry")?.recovered).toBe(2);
     expect(result.results.find((item) => item.playbookId === "alternate_link")?.recovered).toBe(5);
     expect(result.liftMultiple).toBe(2.5);
+    expect(isDirectionallyPromotable(result)).toBe(true);
+    expect(fallbackPromotion(result).recommendation).toBe("promote");
+  });
+
+  it("withholds expansion when the canary evidence is incomplete", () => {
+    const fixture = loadReplayFixture();
+    const incident = detectIncident(fixture.payments)!;
+    const eligible = eligibleCases(fixture.payments, incident);
+    const assignments = createCanaryAssignments(eligible, fixture.manifest.seed).slice(0, 10);
+    const incomplete = evaluateCanary(assignments, fixture.payments, fixture.outcomes, fixture.manifest.seed);
+    expect(isDirectionallyPromotable(incomplete)).toBe(false);
+    expect(fallbackPromotion(incomplete).recommendation).toBe("extend_canary");
   });
 
   it("computes release metrics from the locked holdout", () => {
@@ -203,6 +216,15 @@ describe("Razorpay safety", () => {
     const signature = createHmac("sha256", "secret").update(body).digest("hex");
     expect(verifyRazorpaySignature(body, signature, "secret")).toBe(true);
     expect(verifyRazorpaySignature(body, "bad", "secret")).toBe(false);
+  });
+
+  it("parses Razorpay's documented payment_links collection", () => {
+    const links = parsePaymentLinkList({ payment_links: [{
+      id: "plink_test", short_url: "https://rzp.io/i/test", reference_id: "rcv_test",
+      amount: 40_000, status: "created",
+    }] });
+    expect(links).toHaveLength(1);
+    expect(links[0]?.reference_id).toBe("rcv_test");
   });
 
   it("captures once, suppresses duplicates, and ignores a late failure", async () => {

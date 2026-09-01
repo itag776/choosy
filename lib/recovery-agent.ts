@@ -209,17 +209,36 @@ export async function investigateIncident(input: { incident: IncidentEvidence; e
   }
 }
 
+export function isDirectionallyPromotable(canary: CanaryResult): boolean {
+  const winner = canary.results.find((result) => result.playbookId === canary.winnerId);
+  const challenger = canary.results.find((result) => result.playbookId !== canary.winnerId);
+  const assignmentIds = new Set(canary.assignments.map((assignment) => assignment.caseId));
+  return Boolean(
+    winner && challenger &&
+    canary.results.length === 2 && canary.assignments.length === 12 && assignmentIds.size === 12 &&
+    canary.assignments.every((assignment) => assignment.committed) &&
+    winner.attempted === 6 && challenger.attempted === 6 &&
+    winner.contacts === winner.attempted && challenger.contacts === challenger.attempted &&
+    winner.recovered > challenger.recovered &&
+    winner.recoveredAmountPaise > challenger.recoveredAmountPaise &&
+    canary.liftMultiple > 1
+  );
+}
+
 export function fallbackPromotion(canary: CanaryResult): PromotionRecommendation {
   const winner = canary.results.find((result) => result.playbookId === canary.winnerId)!;
   const challenger = canary.results.find((result) => result.playbookId !== canary.winnerId)!;
+  const promotable = isDirectionallyPromotable(canary);
   return {
-    mode: "deterministic_fallback", model: "deterministic-policy-v1", recommendation: "promote",
-    playbookId: canary.winnerId,
+    mode: "deterministic_fallback", model: "deterministic-policy-v1", recommendation: promotable ? "promote" : "extend_canary",
+    playbookId: promotable ? canary.winnerId : null,
     evidence: [
       `${winner.recovered}/${winner.attempted} recovered for ${winner.playbookId}.`,
       `${challenger.recovered}/${challenger.attempted} recovered for ${challenger.playbookId}.`,
     ],
-    reason: "Promote the measured winner while preserving approval and stop conditions.",
+    reason: promotable
+      ? "The pre-approved directional gate passed; propose the measured winner for human-approved synthetic replay expansion."
+      : "The directional gate did not pass; collect more evidence before proposing expansion.",
     uncertainty: canary.sampleWarning,
     stoppingConditions: ["Stop after payment capture", "Stop on any policy violation", "Escalate if provider state cannot be reconciled"],
     toolEvents: [{ name: "getCanaryResults", status: "completed", summary: "Persisted assignments and measured replay outcomes read." }],
@@ -238,7 +257,7 @@ export async function evaluatePromotion(canary: CanaryResult): Promise<Promotion
   const agent = new Agent({
     name: "RecoverOS Incident Commander", model: PINNED_AGENT_MODEL, tools: [getCanaryResults],
     modelSettings: { reasoning: { effort: "minimal" }, temperature: 0 },
-    instructions: "Call getCanaryResults, then answer with only one valid JSON object and no markdown. Include recommendation (promote, extend_canary, stop, or escalate), playbookId (wait_retry, alternate_link, or null), evidence (2-6 strings), reason, uncertainty, and stoppingConditions (2-5 strings). Never treat a 12-case canary as statistically conclusive. If promoting, select only the measured winner and preserve stopping conditions.",
+    instructions: "Call getCanaryResults, then answer with only one valid JSON object and no markdown. Include recommendation (promote, extend_canary, stop, or escalate), playbookId (wait_retry, alternate_link, or null), evidence (2-6 strings), reason, uncertainty, and stoppingConditions (2-5 strings). Here, promote means only a human-approved expansion inside the deterministic synthetic replay; it never means a real-money rollout. Recommend promote when the committed 6-versus-6 replay is complete, the declared winner has both more recoveries and more recovered value than the challenger, and liftMultiple is above 1. Otherwise recommend extend_canary, stop, or escalate. Never call twelve cases statistically conclusive. If promoting, select only the measured winner and preserve stopping conditions.",
   });
   try {
     const result = await withTransientRetry(() => runner.run(agent, "Evaluate the completed canary for promotion.", {
@@ -247,8 +266,10 @@ export async function evaluatePromotion(canary: CanaryResult): Promise<Promotion
     if (!result.finalOutput) return fallback;
     const parsed = parseModelJson(result.finalOutput, PromotionSchema);
     const toolEvents = captureToolEvents(result);
+    const expectedPromote = isDirectionallyPromotable(canary);
     const valid = toolEvents.some((item) => item.name === "getCanaryResults") &&
-      (parsed.recommendation !== "promote" || parsed.playbookId === canary.winnerId);
+      (parsed.recommendation !== "promote" || parsed.playbookId === canary.winnerId) &&
+      (expectedPromote ? parsed.recommendation === "promote" : parsed.recommendation !== "promote");
     if (!valid) return fallback;
     return { mode: "gemini_agent", model: PINNED_AGENT_MODEL, ...parsed, toolEvents, responseId: result.lastResponseId, semanticValidation: "passed" };
   } catch (error) {

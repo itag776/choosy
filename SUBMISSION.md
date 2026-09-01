@@ -7,13 +7,13 @@
 **Track:** AI Revenue Recovery
 **One line:** A governed AI incident commander that finds payment revenue at risk, tests the safest recovery action, requires accountable human approval, and proves the provider boundary in Razorpay Test Mode.
 
-## Links to complete after owner-managed integration
+## Links
 
-- **Live demo:** `PENDING — add the deployed HTTPS URL`
+- **Live demo:** https://recoveros-canary-commander.vercel.app
 - **Demo video:** `PENDING — add the final public/unlisted video URL`
 - **Source repository:** https://github.com/itag776/recoveros-canary-commander
 
-These values are deliberately placeholders so the submission never claims a deployment or recording that does not exist.
+The video remains a deliberate placeholder so the submission never claims a recording that does not exist.
 
 ## Recommended 90-second demo
 
@@ -26,9 +26,10 @@ These values are deliberately placeholders so the submission never claims a depl
 
 ## Final owner checklist
 
-- [ ] Configure Gemini, Razorpay Test Mode, webhook secret, Supabase, and production operator auth.
-- [ ] Apply the Supabase migration and verify all four UI integration indicators.
-- [ ] Deploy over HTTPS and replace the live-demo placeholder above.
+- [x] Configure Gemini, Razorpay Test Mode, Supabase, and production operator auth.
+- [x] Apply the Supabase migration and verify durable production runs.
+- [x] Deploy over HTTPS and verify the full flow through Payment Link creation and sync.
+- [ ] Configure the Razorpay webhook secret and verify the final integration indicator.
 - [ ] Record a clean 90-second video and replace the video placeholder above.
 - [ ] Run every command in `TESTING.md` against the submission commit.
 - [ ] Complete one self-owned Test Mode payment and verify the webhook receipt.
