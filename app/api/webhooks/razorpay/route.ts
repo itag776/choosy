@@ -1,5 +1,5 @@
 import { apiError, ok } from "@/lib/http";
-import { processRazorpayWebhook, resolveWebhookRunId } from "@/lib/run-service";
+import { processRazorpayWebhook, resolveWebhookSessionId } from "@/lib/commerce-service";
 import { verifyRazorpaySignature } from "@/lib/webhook";
 
 export async function POST(request: Request) {
@@ -13,9 +13,9 @@ export async function POST(request: Request) {
     if (!eventId) return apiError(new Error("Missing x-razorpay-event-id header."), 400);
     const payload = JSON.parse(rawBody) as Record<string, unknown>;
     const eventType = String(payload.event ?? "unknown");
-    const runId = resolveWebhookRunId(payload);
-    if (!runId) return ok({ accepted: true, ignored: true, reason: "No Kept run correlation was present." });
-    const result = await processRazorpayWebhook({ eventId, eventType, rawBody, payload, runId });
+    const sessionId = resolveWebhookSessionId(payload);
+    if (!sessionId) return ok({ accepted: true, ignored: true, reason: "No Choosy checkout correlation was present." });
+    const result = await processRazorpayWebhook({ eventId, eventType, rawBody, payload, sessionId });
     return ok({ accepted: true, ...result });
   } catch (error) {
     return apiError(error);

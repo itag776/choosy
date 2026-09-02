@@ -14,7 +14,7 @@ export async function POST(request: Request) {
     if (!verifyAccessCode(input.accessCode)) return apiError(Object.assign(new Error("Invalid operator credentials."), { status: 401 }));
     const { token, session } = createOperatorToken(input.actorId);
     (await cookies()).set(OPERATOR_COOKIE, token, operatorCookieOptions);
-    return ok({ authenticated: true, actorId: session.actorId, runId: session.runId });
+    return ok({ authenticated: true, actorId: session.actorId, merchantId: session.merchantId });
   } catch (error) {
     if (error instanceof z.ZodError) return apiError(new Error("Use an operator ID such as operator_judge and a valid access code."), 422);
     return apiError(error);
