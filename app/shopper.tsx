@@ -4,9 +4,9 @@ import Link from "next/link";
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowRight, Check, ChevronRight, LoaderCircle, LockKeyhole, MessageCircle, RotateCcw, ShieldCheck, ShoppingBag, Sparkles } from "lucide-react";
 import { DEMO_CATALOG } from "@/lib/catalog";
+import { quickChoicesForQuestion } from "@/lib/quick-choices";
 import type { Product, ShoppingCommand, ShoppingSessionSnapshot } from "@/lib/types";
 
-const choices: Record<string, string[]> = { category: ["Phone", "Headphones", "Running shoes"], maxBudgetPaise: ["₹5,000", "₹10,000", "₹25,000", "₹50,000", "₹70,000"], useCase: ["Everyday", "Work", "Travel", "Fitness", "Gaming", "Photography"], brandPreference: ["No preference", "Aster", "Northstar", "Luma", "Orbit", "Pulse", "Serein", "Vela", "Ridge", "Kite"], mustHaves: ["No deal-breakers", "Long battery", "Noise cancellation", "Low latency", "Soft cushioning", "Compact"], os: ["Android", "iOS", "No preference"], priority: ["Camera", "Battery", "Performance", "Balanced"], size: ["Compact", "Standard", "Large", "No preference", "UK 7", "UK 8", "UK 9", "UK 10"], formFactor: ["Over-ear", "Earbuds", "No preference"], environment: ["Commute", "Office", "Gym", "Gaming"], feature: ["Noise cancellation", "Low latency", "Call quality", "No preference"], connectivity: ["Wireless", "Wired", "Either"], terrain: ["Road", "Trail", "Mixed"], distance: ["Under 5 km", "5–10 km", "10 km+", "Walking / casual"], cushioning: ["Soft", "Balanced", "Responsive", "No preference"] };
 function inr(value: number): string { return `₹${Math.round(value / 100).toLocaleString("en-IN")}`; }
 function product(id: string | null): Product | undefined { return id ? DEMO_CATALOG.find((item) => item.id === id) : undefined; }
 
@@ -32,7 +32,7 @@ export default function Shopper() {
     setBusy(false);
   }
   function submit(event: FormEvent) { event.preventDefault(); void send(input); }
-  const activeChoices = session?.activeQuestionKey ? choices[session.activeQuestionKey] ?? [] : [];
+  const activeChoices = quickChoicesForQuestion(session?.activeQuestionKey ?? null, session?.profile.category ?? null);
   const selected = product(session?.selectedProductId ?? null);
   const completion = session ? Math.min(100, Math.round(session.profile.confirmedKeys.length / (session.profile.category === "headphones" || session.profile.category === "running-shoes" ? 9 : session.profile.category === "phones" ? 8 : 5) * 100)) : 0;
   const cartProducts = useMemo(() => session?.cart?.items.map((item) => ({ item, product: product(item.productId) })).filter((entry) => entry.product) ?? [], [session?.cart]);
