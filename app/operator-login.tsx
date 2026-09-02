@@ -1,7 +1,7 @@
 "use client";
 
 import { FormEvent, useState } from "react";
-import { LockKeyhole, LoaderCircle, ShieldCheck } from "lucide-react";
+import { ArrowRight, LockKeyhole, LoaderCircle, ShieldCheck } from "lucide-react";
 
 export default function OperatorLogin({ productionReady }: { productionReady: boolean }) {
   const [busy, setBusy] = useState(false);
@@ -27,19 +27,20 @@ export default function OperatorLogin({ productionReady }: { productionReady: bo
   }
 
   return <main className="login-shell">
+    <div className="background-planes" aria-hidden="true"><i /><i /><i /></div>
     <section className="login-card">
-      <div className="brand login-brand" aria-label="Kept"><b className="brand-word">kept</b><span className="brand-dot" /></div>
-      <div className="login-icon"><LockKeyhole size={28}/></div>
-      <span className="login-kicker">AUTHENTICATED CONTROL PLANE</span>
-      <h1>Operator clearance required.</h1>
-      <p>Every approval is bound to an authenticated operator, an isolated recovery run, and the exact evidence version reviewed.</p>
+      <div className="brand login-brand" aria-label="Kept"><b className="brand-word">kept</b><span className="brand-mark" /></div>
+      <div className="login-icon"><LockKeyhole size={23}/></div>
+      <span className="login-kicker">Revenue recovery, governed</span>
+      <h1>Enter Kept.</h1>
+      <p>Approvals stay bound to you, this recovery run, and the exact evidence you reviewed.</p>
       <form onSubmit={login}>
         <label>Operator ID<input name="actorId" defaultValue="operator_judge" pattern="operator_[a-z0-9_-]{2,32}" required autoComplete="username"/></label>
         <label>Access code<input name="accessCode" type="password" required autoComplete="current-password" placeholder={productionReady ? "Configured by deployment owner" : "Local code: kept-demo"}/></label>
         {error&&<p className="login-error">{error}</p>}
-        <button disabled={busy}>{busy?<LoaderCircle className="spin" size={17}/>:<ShieldCheck size={17}/>} {busy?"Opening isolated run":"Enter incident room"}</button>
+        <button disabled={busy}>{busy?<LoaderCircle className="spin" size={17}/>:<ShieldCheck size={17}/>}<span>{busy?"Opening your run":"Continue"}</span><ArrowRight size={17}/></button>
       </form>
-      <small>{productionReady?"Production operator secrets configured":"Development-only shared code active · production fails closed"}</small>
+      <small>{productionReady?"Secure operator access is active":"Development access is active"}</small>
     </section>
   </main>;
 }
