@@ -5,6 +5,7 @@ import { verifyCommerceAuditChain } from "@/lib/commerce-audit";
 import { buildCart, emptyPreferenceProfile, isProfileComplete, nextQuestion, rankProducts, recommendedAddons, validateCart } from "@/lib/commerce-policy";
 import { createMachineCheckout, createMachineQuote, executeShoppingCommand, markSelectedItemUnavailable, processRazorpayWebhook, sendShoppingMessage } from "@/lib/commerce-service";
 import { createOperatorToken, verifyAccessCode, verifyOperatorToken } from "@/lib/operator-auth";
+import { quickChoicesForQuestion } from "@/lib/quick-choices";
 import { checkoutIntent, stableReferenceId } from "@/lib/razorpay";
 import { setCommerceRepositoryForTests } from "@/lib/repository";
 import { verifyRazorpaySignature } from "@/lib/webhook";
@@ -18,6 +19,12 @@ beforeEach(()=>{ repository=new MemoryCommerceRepository(); setCommerceRepositor
 afterEach(()=>{ setCommerceRepositoryForTests(); vi.unstubAllEnvs(); vi.unstubAllGlobals(); });
 
 describe("discovery and ranking boundary",()=>{
+  it("keeps category-specific quick choices isolated",()=>{
+    expect(quickChoicesForQuestion("size","phones")).toEqual(["Compact","Standard","Large","No preference"]);
+    expect(quickChoicesForQuestion("size","phones")).not.toContain("UK 7");
+    expect(quickChoicesForQuestion("size","running-shoes")).toEqual(["UK 7","UK 8","UK 9","UK 10"]);
+    expect(quickChoicesForQuestion("brandPreference","phones")).toEqual(["No preference","Aster","Northstar","Luma"]);
+  });
   it("withholds recommendations until every required answer is explicit",()=>{ const profile=emptyPreferenceProfile(); expect(isProfileComplete(profile)).toBe(false); expect(nextQuestion(profile)?.key).toBe("category"); expect(rankProducts(profile,DEMO_CATALOG)).toEqual([]); });
   it("returns only in-stock products within budget and matching hard must-haves",()=>{ const profile:PreferenceProfile={category:"phones",maxBudgetPaise:50_000_00,useCase:"Photography",brandPreference:"No preference",mustHaves:["camera"],answers:{os:"Android",priority:"Camera",size:"Standard"},confirmedKeys:["category","maxBudgetPaise","useCase","brandPreference","mustHaves","os","priority","size"]}; const results=rankProducts(profile,DEMO_CATALOG); expect(results.length).toBeGreaterThan(0); expect(results.length).toBeLessThanOrEqual(3); for(const result of results){const product=DEMO_CATALOG.find((item)=>item.id===result.productId)!;const variant=product.variants.find((item)=>item.id===result.variantId)!;expect(product.tags).toContain("camera");expect(variant.pricePaise).toBeLessThanOrEqual(profile.maxBudgetPaise!);expect(variant.stock).toBeGreaterThan(0);} });
   it("offers no more than two category-relevant budget-safe add-ons",()=>{ const profile:PreferenceProfile={category:"phones",maxBudgetPaise:50_000_00,useCase:"Everyday",brandPreference:"No preference",mustHaves:[],answers:{os:"Android",priority:"Balanced",size:"Standard"},confirmedKeys:["category","maxBudgetPaise","useCase","brandPreference","mustHaves","os","priority","size"]}; const primary=DEMO_CATALOG.find((item)=>item.sku==="PH-A1")!; const addons=recommendedAddons(profile,primary,DEMO_CATALOG); expect(addons).toHaveLength(2); expect(addons.every((item)=>item.kind==="addon"&&item.category==="phones")).toBe(true); });
