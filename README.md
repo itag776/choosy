@@ -57,4 +57,4 @@ See [architecture](ARCHITECTURE.md), [threat model](THREAT_MODEL.md), [evaluatio
 
 [Open the production demo](https://usekept.vercel.app). Production has been exercised end to end through Gemini investigation and promotion evaluation, authenticated approvals, Supabase persistence, and Razorpay Test Mode Payment Link creation and synchronization. The Vercel project is intentionally deployed from the CLI without a Git connection, so repository pushes do not trigger automatic deployments.
 
-The signed Razorpay webhook and demo video remain owner-completion items. The incident-room rail reports each configured system independently; see `SUBMISSION.md` for the final checklist.
+The Razorpay webhook has been validated end to end with an owner-completed ₹400 Test Mode payment: HMAC verification, exact run/link/reference correlation, Supabase persistence, and duplicate delivery with zero duplicate executions. The demo video remains an owner-completion item; see `SUBMISSION.md` for the final checklist.

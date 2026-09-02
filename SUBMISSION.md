@@ -29,11 +29,11 @@ The video remains a deliberate placeholder so the submission never claims a reco
 - [x] Configure Gemini, Razorpay Test Mode, Supabase, and production operator auth.
 - [x] Apply the Supabase migration and verify durable production runs.
 - [x] Deploy over HTTPS and verify the full flow through Payment Link creation and sync.
-- [ ] Configure the Razorpay webhook secret and verify the final integration indicator.
+- [x] Configure the Razorpay webhook secret and verify signed production delivery.
 - [ ] Record a clean 90-second video and replace the video placeholder above.
-- [ ] Run every command in `TESTING.md` against the submission commit.
-- [ ] Complete one self-owned Test Mode payment and verify the webhook receipt.
-- [ ] Confirm the demo uses no real customer data or real-money payment mode.
+- [x] Run every command in `TESTING.md` against the submission commit: 19 tests, locked evaluation, lint, and production build all passed.
+- [x] Complete one self-owned ₹400 Test Mode payment and verify the webhook receipt plus duplicate-delivery idempotency.
+- [x] Confirm the demo uses no real customer data or real-money payment mode.
 - [ ] Add screenshots of detection, human approval, measured canary, evidence drawer, and Test Mode proof.
 
 ## Judge-facing truth statement
