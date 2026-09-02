@@ -1,41 +1,38 @@
 # Buildathon submission packet
 
-## Project
+**Title:** Choosy
 
-**Title:** Kept
+**Track:** AI Growth & Agentic Commerce<br>
+**Tagline:** Shopping that listens.<br>
+**One line:** Choosy asks the useful questions first, recommends only compliant merchant inventory, and turns an explicitly approved cart into a safe Razorpay checkout.
 
-**Track:** AI Revenue Recovery
-**One line:** Kept finds revenue at risk, tests the safest recovery, and wins it back—with every consequential step human-approved and measurable.
+## Why it can win
 
-## Links
+Most shopping assistants jump to plausible products. Choosy makes restraint demonstrable: no recommendation before context, no invented catalog facts, no promotion hiding inside fit, and no payment action before exact confirmation. The out-of-stock demo proves the agent can stop gracefully at the most important boundary. The merchant cockpit then makes every model, policy, inventory, cart, and payment decision explainable through one audit trail.
 
-- **Live demo:** https://usekept.vercel.app
-- **Demo video:** `PENDING — add the final public/unlisted video URL`
-- **Source repository:** https://github.com/itag776/recoveros-canary-commander
+The same catalog, quote, and checkout boundary is exposed to external agent buyers through a thin machine-readable API, making the merchant both conversationally shoppable and agent-readable.
 
-The video remains a deliberate placeholder so the submission never claims a recording that does not exist.
+## 90-second demo
 
-## Recommended 90-second demo
+1. Ask vaguely for a phone and show one-at-a-time adaptive questions.
+2. Reveal the transparent three-product shortlist only after completeness passes.
+3. Select a product and optionally attach one relevant, budget-safe add-on.
+4. Use the merchant control to make the selected variant unavailable.
+5. Confirm the cart and show Choosy stop before Razorpay, explain why, and offer safe alternatives.
+6. Re-select, explicitly confirm, and open the Razorpay Test Mode link.
+7. Show the signed webhook and complete audit trail in `/merchant`.
+8. Open `/api/commerce/capabilities` for the agent-buyer story.
 
-1. **0–10s — Stakes.** “Revenue recovery agents are dangerous if they can contact everyone, mutate amounts, or count synthetic money as real.”
-2. **10–25s — Detect.** Inject the fixture and show the isolated issuer × method × step × reason cohort plus adversarial evaluation evidence.
-3. **25–42s — Investigate.** Run the bounded agent. Point out typed read-only tools and deterministic policy enforcement.
-4. **42–60s — Govern.** Approve the twelve-case canary, show persisted assignment before outcomes, then compare both playbooks.
-5. **60–75s — Account.** Approve promotion and open the evidence drawer: authenticated receipt, policy/cohort digests, audit hash, event-derived replay ledger.
-6. **75–90s — Prove.** Create and pay the Razorpay Test Mode link. Show exact webhook correlation, ₹400 isolated in the sandbox ledger, and duplicate delivery leaving money unchanged.
+## Truth statement
 
-## Final owner checklist
+Choosy uses fictional demo inventory and Razorpay Test Mode. Funnel values describe demo sessions only. No production conversion lift, real merchant revenue, fulfillment capability, or formal AP2/x402 compliance is claimed.
 
-- [x] Configure Gemini, Razorpay Test Mode, Supabase, and production operator auth.
-- [x] Apply the Supabase migration and verify durable production runs.
-- [x] Deploy over HTTPS and verify the full flow through Payment Link creation and sync.
-- [x] Configure the Razorpay webhook secret and verify signed production delivery.
-- [ ] Record a clean 90-second video and replace the video placeholder above.
-- [x] Run every command in `TESTING.md` against the submission commit: 19 tests, locked evaluation, lint, and production build all passed.
-- [x] Complete one self-owned ₹400 Test Mode payment and verify the webhook receipt plus duplicate-delivery idempotency.
-- [x] Confirm the demo uses no real customer data or real-money payment mode.
-- [ ] Add screenshots of detection, human approval, measured canary, evidence drawer, and Test Mode proof.
+## Owner checklist
 
-## Judge-facing truth statement
-
-Kept demonstrates governed orchestration, replay measurement, and Razorpay Test Mode integration. Replay recoveries are synthetic; Test Mode recovery is sandbox-only. The audit chain is tamper-evident, while Supabase evidence rows are protected from update/delete. The detector score is heuristic. No production lift or real merchant revenue is claimed.
+- [ ] Rename/link the Vercel project as `choosy` and deploy.
+- [ ] Apply `004_choosy_agentic_commerce.sql` to the configured Supabase project.
+- [ ] Set the production `CHOOSY_*` and `COMMERCE_AGENT_API_KEY` variables.
+- [ ] Update and verify the Razorpay webhook URL.
+- [ ] Complete one Test Mode payment and duplicate/mismatch replay.
+- [ ] Record the 90-second video and add live demo, source, and video links.
+- [ ] Capture shopper shortlist, failure/reselection, payment, and merchant audit screenshots.

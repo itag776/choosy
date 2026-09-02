@@ -1,0 +1,134 @@
+.preference-chips button {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid #cfd5c6;
+  background: #f8faef;
+  border-radius: 999px;
+  padding: 8px 11px;
+  font-size: 11px;
+}
+
+.preference-chips button span {
+  color: #7b8379;
+  font-size: 15px;
+  line-height: 10px;
+}
+
+.checkout-ready.failure {
+  border-color: rgba(154, 54, 44, 0.22);
+  background: #fff8f4;
+}
+
+.audit-filter {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.audit-filter select {
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 7px;
+  background: #101713;
+  color: #cbd4cd;
+  padding: 7px 9px;
+  font-size: 9px;
+}
+
+/* Razorpay-inspired visual system: clear blue, deep navy, white space, Inter. */
+:root {
+  --ink: #132644;
+  --muted: #667085;
+  --paper: #f6f8fc;
+  --cream: #eaf2ff;
+  --white: #ffffff;
+  --lime: #3975ea;
+  --green: #3975ea;
+  --line: #e2e8f2;
+  --shadow: 0 20px 60px rgba(31, 56, 96, 0.1);
+}
+
+body {
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+.shop-shell {
+  background: linear-gradient(150deg, #ffffff 0%, #f6f8fc 48%, #edf3ff 100%);
+}
+
+.wordmark span,
+.eyebrow,
+.product-copy small,
+.promotion-note {
+  color: #3975ea;
+}
+
+.merchant-link,
+.conversation-panel,
+.decision-panel,
+.trust-strip span {
+  background: rgba(255, 255, 255, 0.92);
+}
+
+.progress i,
+.message.user p,
+.composer button,
+.primary-button,
+.razorpay-button,
+.product-copy > button {
+  background: #3975ea;
+  color: #ffffff;
+}
+
+.message p,
+.quick-choices button,
+.preference-chips button {
+  background: #f2f6fd;
+}
+
+.orb {
+  background: #eaf2ff;
+  color: #3975ea;
+  box-shadow: 0 14px 34px rgba(57, 117, 234, 0.16);
+}
+
+.how-section,
+.cockpit {
+  background: #132644;
+}
+
+.cockpit-header,
+.session-list,
+.audit-panel,
+.metric-grid article {
+  background: #182d4c;
+}
+
+.session-list > button.active,
+.audit-icon {
+  background: #23436f;
+}
+
+.integration-row i.on,
+.audit-icon.success,
+.demo-control svg {
+  color: #72a3ff;
+}
+
+.integration-row i.on {
+  background: #72a3ff;
+}
+
+.demo-control,
+.demo-control button {
+  border-color: rgba(114, 163, 255, 0.42);
+}
+
+.demo-control button {
+  background: #3975ea;
+  color: #ffffff;
+}
+
+.audit-filter select {
+  background: #132644;
+}

@@ -1,5 +1,5 @@
 {
-  "name": "kept-revenue-recovery",
+  "name": "choosy",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -9,8 +9,7 @@
     "start": "next start",
     "lint": "eslint .",
     "eval": "vitest run tests/eval.test.ts",
-    "eval:agent": "vitest run tests/agent-eval.test.ts",
-    "test": "vitest run --exclude tests/agent-eval.test.ts",
+    "test": "vitest run",
     "test:watch": "vitest"
   },
   "dependencies": {

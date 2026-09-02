@@ -1,205 +1,94 @@
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { mkdir, readFile, readdir, rename, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { createInitialRun, DEFAULT_MERCHANT_ID } from "@/lib/demo-data";
-import { verifyAuditChain } from "@/lib/demo-data";
+import path from "node:path";
+import { DEMO_CATALOG } from "@/lib/catalog";
+import { verifyCommerceAuditChain } from "@/lib/commerce-audit";
+import { createShoppingSession, DEFAULT_MERCHANT_ID } from "@/lib/commerce-data";
 import { getSupabaseAdmin, hasSupabaseConfig } from "@/lib/supabase";
-import type { AuditEvent, ExternalAction, InvestigationResult, PromotionRecommendation, StoredRecoveryRun } from "@/lib/types";
+import type { AgentTurnResult, CheckoutAction, CommerceAuditEvent, Product, ShoppingSessionSnapshot } from "@/lib/types";
 
-export class RepositoryConflictError extends Error {
-  status = 409;
-  constructor(message = "The run changed while this command was executing. Refresh and retry.") {
-    super(message);
-  }
+export class RepositoryConflictError extends Error { constructor() { super("The shopping session changed. Refresh and try again."); } }
+export interface WebhookTransitionResult { duplicate: boolean; session: ShoppingSessionSnapshot; }
+
+export interface CommerceRepository {
+  create(session: ShoppingSessionSnapshot): Promise<ShoppingSessionSnapshot>;
+  get(sessionId: string): Promise<ShoppingSessionSnapshot>;
+  replace(current: ShoppingSessionSnapshot, next: ShoppingSessionSnapshot, events: CommerceAuditEvent[]): Promise<ShoppingSessionSnapshot>;
+  list(): Promise<ShoppingSessionSnapshot[]>;
+  getCatalog(): Promise<Product[]>;
+  setVariantStock(variantId: string, stock: number): Promise<void>;
+  saveAgentRun(sessionId: string, result: AgentTurnResult): Promise<void>;
+  findAgentCache(inputDigest: string): Promise<AgentTurnResult | null>;
+  saveCheckout(action: CheckoutAction): Promise<void>;
+  applyWebhook(current: ShoppingSessionSnapshot, next: ShoppingSessionSnapshot, eventId: string, eventType: string, payloadDigest: string, auditEvent: CommerceAuditEvent): Promise<WebhookTransitionResult>;
 }
 
-export interface WebhookTransitionResult {
-  duplicate: boolean;
-  run: StoredRecoveryRun;
-}
+const root = path.join(tmpdir(), "choosy");
+const inventoryPath = path.join(root, "inventory.json");
+const locks = new Map<string, Promise<void>>();
+const localAgentCache = new Map<string, AgentTurnResult>();
 
-export interface RunRepository {
-  get(runId: string): Promise<StoredRecoveryRun>;
-  replace(current: StoredRecoveryRun, next: StoredRecoveryRun, events: AuditEvent[]): Promise<StoredRecoveryRun>;
-  saveAgentRun(runId: string, purpose: "investigation" | "promotion", result: InvestigationResult | PromotionRecommendation): Promise<void>;
-  findAgentDecisionCache?(inputDigest: string): Promise<InvestigationResult | null>;
-  saveExternalAction(runId: string, action: ExternalAction): Promise<void>;
-  applyWebhook(current: StoredRecoveryRun, next: StoredRecoveryRun, eventId: string, eventType: string, payloadDigest: string, auditEvent: AuditEvent): Promise<WebhookTransitionResult>;
-}
+function sessionPath(sessionId: string): string { if (!/^shop_[a-f0-9]{24}$/.test(sessionId)) throw new Error("Invalid shopping session ID."); return path.join(root, `${sessionId}.json`); }
+async function atomicWrite(file: string, value: unknown): Promise<void> { await mkdir(root, { recursive: true }); const temporary = `${file}.${process.pid}.tmp`; await writeFile(temporary, JSON.stringify(value), { mode: 0o600 }); await rename(temporary, file); }
+async function inventoryOverrides(): Promise<Record<string, number>> { try { return JSON.parse(await readFile(inventoryPath, "utf8")) as Record<string, number>; } catch { return {}; } }
+function applyOverrides(catalog: Product[], overrides: Record<string, number>): Product[] { return catalog.map((product) => ({ ...structuredClone(product), variants: product.variants.map((variant) => ({ ...variant, stock: overrides[variant.id] ?? variant.stock })) })); }
 
-const localDirectory = join(tmpdir(), "recoveros-canary-commander", "runs");
-let localQueue: Promise<void> = Promise.resolve();
-const localAgentCache = new Map<string, InvestigationResult>();
-
-function localPath(runId: string): string {
-  if (!/^run_(?:[a-f0-9]{24}|canary_commander)$/.test(runId)) throw Object.assign(new Error("Invalid recovery run identifier."), { status: 422 });
-  return join(localDirectory, `${runId}.json`);
-}
-
-async function readLocal(runId: string): Promise<StoredRecoveryRun> {
-  try {
-    const parsed = JSON.parse(await readFile(localPath(runId), "utf8")) as StoredRecoveryRun;
-    if (parsed.id !== runId || !parsed.canaryAssignments || !parsed.fixtureVersion || !parsed.cycle || !parsed.approvals) throw new Error("Incompatible local state.");
-    if (!verifyAuditChain(parsed.audit)) throw new Error("Recovery audit hash chain verification failed.");
+export class LocalCommerceRepository implements CommerceRepository {
+  async create(session: ShoppingSessionSnapshot): Promise<ShoppingSessionSnapshot> { await atomicWrite(sessionPath(session.id), session); return structuredClone(session); }
+  async get(sessionId: string): Promise<ShoppingSessionSnapshot> {
+    const parsed = JSON.parse(await readFile(sessionPath(sessionId), "utf8")) as ShoppingSessionSnapshot;
+    if (!verifyCommerceAuditChain(parsed.audit)) throw new Error("Commerce audit chain verification failed.");
+    parsed.integration = { gemini: Boolean(process.env.GEMINI_API_KEY), razorpay: Boolean(process.env.RAZORPAY_KEY_ID && process.env.RAZORPAY_KEY_SECRET), webhookSecret: Boolean(process.env.RAZORPAY_WEBHOOK_SECRET), persistence: "local_file" };
     return parsed;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    const seeded = createInitialRun(new Date(), runId);
-    await writeLocal(seeded);
-    return seeded;
   }
+  async replace(current: ShoppingSessionSnapshot, next: ShoppingSessionSnapshot): Promise<ShoppingSessionSnapshot> {
+    const prior = locks.get(current.id) ?? Promise.resolve(); let release!: () => void; const gate = new Promise<void>((resolve) => { release = resolve; }); locks.set(current.id, prior.then(() => gate)); await prior;
+    try { const stored = await this.get(current.id); if (stored.version !== current.version) throw new RepositoryConflictError(); await atomicWrite(sessionPath(current.id), next); return structuredClone(next); }
+    finally { release(); }
+  }
+  async list(): Promise<ShoppingSessionSnapshot[]> { try { const files = (await readdir(root)).filter((file) => /^shop_[a-f0-9]{24}\.json$/.test(file)); const sessions = await Promise.all(files.map((file) => this.get(file.replace(".json", "")))); return sessions.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).slice(0, 30); } catch { return []; } }
+  async getCatalog(): Promise<Product[]> { return applyOverrides(DEMO_CATALOG, await inventoryOverrides()); }
+  async setVariantStock(variantId: string, stock: number): Promise<void> { const values = await inventoryOverrides(); values[variantId] = stock; await atomicWrite(inventoryPath, values); }
+  async saveAgentRun(_sessionId: string, result: AgentTurnResult): Promise<void> { localAgentCache.set(result.inputDigest, structuredClone(result)); }
+  async findAgentCache(inputDigest: string): Promise<AgentTurnResult | null> { return structuredClone(localAgentCache.get(inputDigest) ?? null); }
+  async saveCheckout(action: CheckoutAction): Promise<void> { if (!/^checkout_chy_[a-f0-9]{20}$/.test(action.id)) throw new Error("Invalid checkout action ID."); await atomicWrite(path.join(root, `${action.id}.json`), action); }
+  async applyWebhook(current: ShoppingSessionSnapshot, next: ShoppingSessionSnapshot, eventId: string): Promise<WebhookTransitionResult> { if (current.processedWebhookIds.includes(eventId)) return { duplicate: true, session: current }; return { duplicate: false, session: await this.replace(current, next) }; }
 }
 
-async function writeLocal(run: StoredRecoveryRun): Promise<void> {
-  await mkdir(localDirectory, { recursive: true });
-  const path = localPath(run.id);
-  const temporary = `${path}.${process.pid}.tmp`;
-  await writeFile(temporary, JSON.stringify(run), "utf8");
-  await rename(temporary, path);
-}
-
-class LocalFileRepository implements RunRepository {
-  async get(runId: string): Promise<StoredRecoveryRun> {
-    const run = await readLocal(runId);
-    run.integration = {
-      gemini: Boolean(process.env.GEMINI_API_KEY),
-      razorpay: Boolean(process.env.RAZORPAY_KEY_ID && process.env.RAZORPAY_KEY_SECRET && process.env.RECOVERY_TEST_EMAIL),
-      webhookSecret: Boolean(process.env.RAZORPAY_WEBHOOK_SECRET),
-      persistence: "local_file",
-    };
-    return structuredClone(run);
-  }
-
-  async replace(current: StoredRecoveryRun, next: StoredRecoveryRun): Promise<StoredRecoveryRun> {
-    let saved!: StoredRecoveryRun;
-    const operation = localQueue.then(async () => {
-      const actual = await readLocal(current.id);
-      if (actual.version !== current.version) throw new RepositoryConflictError();
-      await writeLocal(next);
-      saved = structuredClone(next);
-    });
-    localQueue = operation.then(() => undefined, () => undefined);
-    await operation;
-    return saved;
-  }
-
-  async saveAgentRun(_runId: string, purpose: "investigation" | "promotion", result: InvestigationResult | PromotionRecommendation): Promise<void> {
-    if (purpose === "investigation" && "inputDigest" in result && result.mode === "gemini_agent") localAgentCache.set(result.inputDigest, structuredClone(result));
-  }
-  async findAgentDecisionCache(inputDigest: string): Promise<InvestigationResult | null> {
-    return structuredClone(localAgentCache.get(inputDigest) ?? null);
-  }
-  async saveExternalAction(): Promise<void> {}
-
-  async applyWebhook(current: StoredRecoveryRun, next: StoredRecoveryRun, eventId: string): Promise<WebhookTransitionResult> {
-    let result!: WebhookTransitionResult;
-    const operation = localQueue.then(async () => {
-      const actual = await readLocal(current.id);
-      if (actual.processedWebhookIds.includes(eventId)) {
-        result = { duplicate: true, run: actual };
-        return;
-      }
-      if (actual.version !== current.version) throw new RepositoryConflictError();
-      await writeLocal(next);
-      result = { duplicate: false, run: structuredClone(next) };
-    });
-    localQueue = operation.then(() => undefined, () => undefined);
-    await operation;
-    return result;
-  }
-}
-
-class SupabaseRunRepository implements RunRepository {
+class SupabaseCommerceRepository implements CommerceRepository {
   private client = getSupabaseAdmin();
-
-  async get(runId: string): Promise<StoredRecoveryRun> {
-    const { data, error } = await this.client.from("recovery_runs").select("snapshot").eq("id", runId).maybeSingle();
-    if (error) throw new Error(`Supabase run read failed: ${error.message}`);
-    if (!data) {
-      const run = createInitialRun(new Date(), runId);
-      const { error: merchantError } = await this.client.from("merchants").upsert({ id: DEFAULT_MERCHANT_ID, name: "Northstar Commerce", environment: "replay" });
-      if (merchantError) throw new Error(`Supabase merchant seed failed: ${merchantError.message}`);
-      const { error: policyError } = await this.client.from("merchant_policies").upsert({ merchant_id: DEFAULT_MERCHANT_ID, source_text: "Kept governed recovery policy v1", compiled_rules: { preserveOriginalAmount: true, maximumContacts24h: 2, approvalThresholdPaise: 2_500_000, stopOnCapture: true } });
-      if (policyError) throw new Error(`Supabase policy seed failed: ${policyError.message}`);
-      const { error: runError } = await this.client.from("recovery_runs").insert({ id: run.id, merchant_id: run.merchantId, phase: run.phase, version: run.version, fixture_version: run.fixtureVersion, snapshot: run });
-      if (runError && runError.code !== "23505") throw new Error(`Supabase run seed failed: ${runError.message}`);
-      if (runError?.code === "23505") return this.get(runId);
-      return run;
-    }
-    const run = data.snapshot as StoredRecoveryRun;
-    if (!verifyAuditChain(run.audit)) throw new Error("Recovery audit hash chain verification failed.");
-    run.integration = { gemini: Boolean(process.env.GEMINI_API_KEY), razorpay: Boolean(process.env.RAZORPAY_KEY_ID && process.env.RAZORPAY_KEY_SECRET && process.env.RECOVERY_TEST_EMAIL), webhookSecret: Boolean(process.env.RAZORPAY_WEBHOOK_SECRET), persistence: "supabase" };
-    return run;
+  async create(session: ShoppingSessionSnapshot): Promise<ShoppingSessionSnapshot> { await this.client.from("merchants").upsert({ id: DEFAULT_MERCHANT_ID, name: "Choosy Demo Store", environment: "test_mode" }); const { error } = await this.client.from("commerce_sessions").insert({ id: session.id, merchant_id: session.merchantId, phase: session.phase, version: session.version, snapshot: session }); if (error) throw new Error(`Supabase session create failed: ${error.message}`); return session; }
+  async get(sessionId: string): Promise<ShoppingSessionSnapshot> { const { data, error } = await this.client.from("commerce_sessions").select("snapshot").eq("id", sessionId).single(); if (error) throw new Error(`Supabase session read failed: ${error.message}`); const session = data.snapshot as ShoppingSessionSnapshot; if (!verifyCommerceAuditChain(session.audit)) throw new Error("Commerce audit chain verification failed."); session.integration = { gemini: Boolean(process.env.GEMINI_API_KEY), razorpay: Boolean(process.env.RAZORPAY_KEY_ID && process.env.RAZORPAY_KEY_SECRET), webhookSecret: Boolean(process.env.RAZORPAY_WEBHOOK_SECRET), persistence: "supabase" }; return session; }
+  async replace(current: ShoppingSessionSnapshot, next: ShoppingSessionSnapshot, events: CommerceAuditEvent[]): Promise<ShoppingSessionSnapshot> { const { data, error } = await this.client.rpc("apply_commerce_transition", { p_session_id: current.id, p_expected_version: current.version, p_next_phase: next.phase, p_snapshot: next, p_events: events }); if (error) { if (error.message.includes("stale_session_version")) throw new RepositoryConflictError(); throw new Error(`Supabase transition failed: ${error.message}`); } return (data as { snapshot: ShoppingSessionSnapshot }).snapshot; }
+  async list(): Promise<ShoppingSessionSnapshot[]> { const { data, error } = await this.client.from("commerce_sessions").select("snapshot").order("updated_at", { ascending: false }).limit(30); if (error) throw new Error(error.message); return data.map((row) => row.snapshot as ShoppingSessionSnapshot); }
+  async getCatalog(): Promise<Product[]> {
+    const { data, error } = await this.client.from("catalog_products").select("id,sku,category,kind,brand,name,description,image_url,promoted,tags,attributes,catalog_variants(id,sku,label,price_paise,stock,attributes)").eq("active", true);
+    if (error) throw new Error(`Supabase catalog read failed: ${error.message}`);
+    return data.map((row) => ({ id: row.id, sku: row.sku, category: row.category, kind: row.kind, brand: row.brand, name: row.name, description: row.description, imageUrl: row.image_url, promoted: row.promoted, tags: row.tags, attributes: row.attributes, variants: row.catalog_variants.map((item: Record<string, unknown>) => ({ id: item.id, sku: item.sku, label: item.label, pricePaise: item.price_paise, stock: item.stock, attributes: item.attributes })) })) as Product[];
   }
-
-  async replace(current: StoredRecoveryRun, next: StoredRecoveryRun, events: AuditEvent[]): Promise<StoredRecoveryRun> {
-    const { data, error } = await this.client.rpc("apply_run_transition", {
-      p_run_id: current.id, p_expected_version: current.version, p_next_phase: next.phase,
-      p_state_patch: next, p_events: events,
-    });
-    if (error?.message.includes("stale_run_version")) throw new RepositoryConflictError();
-    if (error) throw new Error(`Supabase transition failed: ${error.message}`);
-    if (next.payments.length) {
-      const rows = next.payments.map((payment) => ({
-        id: payment.id, run_id: next.id, customer_id: payment.customerId, amount_paise: payment.amountPaise,
-        method: payment.method, issuer: payment.issuer, status: payment.status, error_reason: payment.errorReason,
-        error_source: payment.errorSource, error_step: payment.errorStep, consent: payment.consent,
-        contacts_last_24h: payment.contactsLast24h, created_at: payment.createdAt,
-      }));
-      const { error: paymentsError } = await this.client.from("payment_attempts").upsert(rows, { onConflict: "run_id,id" });
-      if (paymentsError) throw new Error(`Supabase payment seed failed: ${paymentsError.message}`);
-    }
-    return (data as { snapshot: StoredRecoveryRun }).snapshot;
-  }
-
-  async saveAgentRun(runId: string, purpose: "investigation" | "promotion", result: InvestigationResult | PromotionRecommendation): Promise<void> {
-    const { error } = await this.client.from("agent_runs").insert({
-      run_id: runId, purpose, model: result.model, mode: result.mode, status: "completed",
-      response_id: result.responseId ?? null, input_digest: "inputDigest" in result ? result.inputDigest : null,
-      prompt_version: "promptVersion" in result ? result.promptVersion : null,
-      catalog_version: "catalogVersion" in result ? result.catalogVersion : null,
-      tool_events: result.toolEvents, output: result,
-    });
-    if (error) throw new Error(`Supabase agent audit failed: ${error.message}`);
-  }
-
-  async findAgentDecisionCache(inputDigest: string): Promise<InvestigationResult | null> {
-    const { data, error } = await this.client.from("agent_runs").select("output").eq("purpose", "investigation").eq("mode", "gemini_agent").eq("status", "completed").eq("input_digest", inputDigest).order("created_at", { ascending: false }).limit(1).maybeSingle();
-    if (error) throw new Error(`Supabase agent cache read failed: ${error.message}`);
-    return data?.output as InvestigationResult | null;
-  }
-
-  async saveExternalAction(runId: string, action: ExternalAction): Promise<void> {
-    const { error } = await this.client.from("external_actions").upsert({
-      id: action.id, run_id: runId, type: action.type, idempotency_key: action.idempotencyKey,
-      reference_id: action.referenceId, provider_id: action.providerId ?? null, status: action.status,
-      amount_paise: action.amountPaise, request_digest: action.requestDigest, response: action,
-      notification_medium: action.notificationMedium, notification_status: action.notificationStatus,
-      masked_recipient: action.maskedRecipient ?? null, notification_accepted_at: action.notificationAcceptedAt ?? null,
-      updated_at: action.updatedAt,
-    });
-    if (error) throw new Error(`Supabase external action audit failed: ${error.message}`);
-  }
-
-  async applyWebhook(current: StoredRecoveryRun, next: StoredRecoveryRun, eventId: string, eventType: string, payloadDigest: string, auditEvent: AuditEvent): Promise<WebhookTransitionResult> {
-    const { data, error } = await this.client.rpc("process_razorpay_webhook", {
-      p_run_id: current.id, p_expected_version: current.version, p_event_id: eventId,
-      p_event_type: eventType, p_payload_digest: payloadDigest, p_state_patch: next, p_event: auditEvent,
-    });
-    if (error?.message.includes("stale_run_version")) throw new RepositoryConflictError();
-    if (error) throw new Error(`Supabase webhook transition failed: ${error.message}`);
-    const result = data as { duplicate: boolean; snapshot: StoredRecoveryRun };
-    return { duplicate: result.duplicate, run: result.snapshot };
-  }
+  async setVariantStock(variantId: string, stock: number): Promise<void> { const { error } = await this.client.from("catalog_variants").update({ stock, updated_at: new Date().toISOString() }).eq("id", variantId); if (error) throw new Error(error.message); }
+  async saveAgentRun(sessionId: string, result: AgentTurnResult): Promise<void> { const { error } = await this.client.from("commerce_agent_runs").insert({ session_id: sessionId, model: result.model, mode: result.mode, input_digest: result.inputDigest, prompt_version: result.promptVersion, catalog_version: result.catalogVersion, output: result }); if (error) throw new Error(error.message); }
+  async findAgentCache(inputDigest: string): Promise<AgentTurnResult | null> { const { data, error } = await this.client.from("commerce_agent_runs").select("output").eq("input_digest", inputDigest).eq("mode", "gemini_agent").order("created_at", { ascending: false }).limit(1).maybeSingle(); if (error) throw new Error(error.message); return data?.output as AgentTurnResult | null; }
+  async saveCheckout(action: CheckoutAction): Promise<void> { const { error } = await this.client.from("commerce_checkout_actions").upsert({ id: action.id, session_id: action.sessionId, cart_id: action.cartId, cart_digest: action.cartDigest, quote_digest: action.quoteDigest, idempotency_key: action.idempotencyKey, reference_id: action.referenceId, amount_paise: action.amountPaise, provider_id: action.providerId ?? null, status: action.status, request_digest: action.requestDigest, response: action, updated_at: action.updatedAt }); if (error) throw new Error(error.message); }
+  async applyWebhook(current: ShoppingSessionSnapshot, next: ShoppingSessionSnapshot, eventId: string, eventType: string, payloadDigest: string, auditEvent: CommerceAuditEvent): Promise<WebhookTransitionResult> { const { data, error } = await this.client.rpc("process_commerce_webhook", { p_session_id: current.id, p_expected_version: current.version, p_event_id: eventId, p_event_type: eventType, p_payload_digest: payloadDigest, p_snapshot: next, p_event: auditEvent }); if (error) throw new Error(`Supabase webhook transition failed: ${error.message}`); const result = data as { duplicate: boolean; snapshot: ShoppingSessionSnapshot }; return { duplicate: result.duplicate, session: result.snapshot }; }
 }
 
-let repository: RunRepository | undefined;
-
-export function getRunRepository(): RunRepository {
-  repository ??= hasSupabaseConfig() ? new SupabaseRunRepository() : new LocalFileRepository();
-  return repository;
+let repositoryOverride: CommerceRepository | undefined;
+let singleton: CommerceRepository | undefined;
+export function getCommerceRepository(): CommerceRepository {
+  const durable = hasSupabaseConfig() && (process.env.NODE_ENV === "production" || process.env.USE_SUPABASE_COMMERCE === "true");
+  return repositoryOverride ?? (singleton ??= durable ? new SupabaseCommerceRepository() : new LocalCommerceRepository());
 }
-
-export function setRunRepositoryForTests(value?: RunRepository): void {
-  repository = value;
+export function setCommerceRepositoryForTests(value?: CommerceRepository): void { repositoryOverride = value; singleton = undefined; }
+export async function createAndStoreSession(): Promise<ShoppingSessionSnapshot> {
+  const session = createShoppingSession();
+  const selectedRepository = getCommerceRepository();
+  try { return await selectedRepository.create(session); }
+  catch (error) {
+    if (process.env.NODE_ENV === "production" || !(selectedRepository instanceof SupabaseCommerceRepository)) throw error;
+    console.warn("Choosy commerce schema is not available; using the local development repository.");
+    singleton = singleton instanceof LocalCommerceRepository ? singleton : new LocalCommerceRepository();
+    session.integration.persistence = "local_file";
+    return singleton.create(session);
+  }
 }

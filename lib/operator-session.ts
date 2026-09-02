@@ -7,9 +7,9 @@ export async function getOperatorSession(): Promise<OperatorIdentity | null> {
   return verifyOperatorToken((await cookies()).get(OPERATOR_COOKIE)?.value);
 }
 
-export async function requireOperatorSession(runId?: string): Promise<OperatorIdentity> {
+export async function requireOperatorSession(merchantId?: string): Promise<OperatorIdentity> {
   const session = await getOperatorSession();
   if (!session) throw Object.assign(new Error("Operator authentication is required."), { status: 401 });
-  if (runId && session.runId !== runId) throw Object.assign(new Error("This recovery run belongs to another operator session."), { status: 403 });
+  if (merchantId && session.merchantId !== merchantId) throw Object.assign(new Error("This merchant belongs to another operator session."), { status: 403 });
   return session;
 }

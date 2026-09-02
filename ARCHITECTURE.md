@@ -1,48 +1,43 @@
-# Kept architecture
+# Choosy architecture
 
 ## Control flow
 
 ```mermaid
 flowchart LR
-  O[Authenticated operator] -->|HttpOnly HMAC session| UI[Next.js incident room]
-  UI -->|run-scoped versioned command| API[Route handlers]
-  API --> SM[Deterministic state machine]
-  SM --> DET[Incident detector]
-  SM --> AG[Bounded AI investigator]
-  AG -->|typed read tools + schema output| SM
-  SM --> POL[Deterministic policy gate]
-  POL -->|approval required| APR[Digest-bound receipt]
-  SM --> SIM[Event-sourced replay canary]
-  SM --> RP[Razorpay Test Mode]
-  RP -->|raw-body HMAC + run/artifact correlation| WH[Webhook handler]
-  WH --> SM
-  SM --> REPO[(Local preview or Supabase)]
-  REPO --> AUD[Hash-chained audit + append-only evidence tables]
+  S[Anonymous shopper] -->|signed HttpOnly session| API[Next.js route handlers]
+  API --> A[Gemini discovery agent]
+  A -->|typed reads + Zod output| P[Deterministic commerce policy]
+  P --> C[(Versioned commerce session)]
+  M[Authenticated merchant] -->|inventory control + audit read| C
+  C -->|confirmed cart intent| R[Razorpay Test Mode]
+  R -->|raw-body HMAC webhook| W[Exact correlation gate]
+  W --> C
+  C --> D[(Local preview or Supabase)]
+  D --> E[Append-only hash-chained audit]
 ```
+
+## Responsibility split
+
+- Gemini extracts multiple preferences from natural language and helps identify the next missing field. It has only typed, read-only tools.
+- Deterministic code owns required-field completeness, catalog lookup, hard constraints, stock and price filtering, fit scoring, promotion tie-break disclosure, add-on limits, totals, quote integrity, and checkout eligibility.
+- The catalog is merchant-scoped demo inventory. Unknown categories are honestly refused.
+- Every mutation uses optimistic versioning and a persisted idempotency receipt.
+
+## State machine
+
+`discovering → recommendations_ready → item_selected → cart_review → checkout_ready → paid`
+
+Safe branches are `agent_failure`, `needs_reselection`, and `payment_failed`. An unavailable variant moves the session to `needs_reselection` before any provider call. A late failure cannot regress `paid`.
 
 ## Trust boundaries
 
-1. **Browser → server.** The browser holds only an HttpOnly, SameSite=Strict operator token. Every run endpoint revalidates the token and checks that the path run ID equals the token run ID.
-2. **Model → policy.** Model output is untrusted. Zod validates shape and deterministic code validates supported playbooks, amount preservation, consent, frequency limits, approval thresholds, and stop-on-capture.
-3. **Server → Razorpay.** A stable reference and request digest are persisted before the API call. Retries reconcile by reference before creating another Payment Link.
-4. **Razorpay → webhook.** The handler verifies HMAC over the untouched raw request body. The signed payload must contain the run correlation and match the persisted provider ID, reference ID, and original amount before capture is accepted.
-5. **Server → persistence.** Supabase uses optimistic version checks and transactions for state changes. Webhook event deduplication and the state transition occur in the same database function.
+1. Shopper sessions use a signed, HttpOnly, SameSite=Lax cookie containing only the allowed shopping session ID.
+2. Merchant APIs use a separate signed, HttpOnly operator cookie and merchant identity.
+3. AI output is untrusted until strict schema and semantic validation pass; it never receives write or payment tools.
+4. Payment intent is persisted before the Razorpay call and bound to cart/quote digests, reference, and amount.
+5. Webhooks are verified from raw bytes, deduplicated by event ID, and exactly correlated before state changes.
+6. Supabase transitions are version-checked; audit rows reject update and delete.
 
-## State ownership
+## Persistence
 
-Each successful login creates a cryptographically random `run_<24 hex>` identifier embedded in the signed operator session. There is no shared demo run in the browser path. Local preview stores one file per run; Supabase stores one `recovery_runs` row per run. A run-scoped command from another session returns HTTP 403.
-
-## Agent boundary
-
-The investigator receives five typed, read-only tools and must return schema-valid investigation or promotion data. Gemini runs through an OpenAI-compatible Chat Completions provider and does not receive Razorpay credentials or repository mutation tools. A deterministic fallback keeps the demo usable when Gemini is absent, rate-limited, or times out; the UI labels which path ran.
-
-## Recovery execution
-
-Canary assignment is seeded and persisted before fixture outcomes are read. Promotion replays an event-producing adapter that emits `intervention_dispatched`, `recovery_captured`, and `contact_stopped`. The ledger is reduced from those events, allowing duplicate-dispatch and post-capture-contact assertions instead of trusting fixed totals.
-
-## Evidence semantics
-
-- Fixture integrity is SHA-256 verification, not a digital signature.
-- The incident score is a deterministic heuristic, not a calibrated probability.
-- Local audit evidence is hash-chained and verified on read; it is tamper-evident, not storage-immutable.
-- Supabase `audit_events` and `approval_receipts` reject update/delete operations, while snapshots remain mutable through version-checked service-role functions.
+`004_choosy_agentic_commerce.sql` adds category profiles, catalog products and variants, commerce sessions, agent runs, checkout actions, webhook receipts, and audit events. Existing legacy tables are retained for rollback but are not read by the Choosy application.

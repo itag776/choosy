@@ -1,8 +1,6 @@
 # Exact testing instructions
 
-## Automated release gate
-
-From the repository root with Node.js 20+:
+## Automated gate
 
 ```bash
 npm install
@@ -12,29 +10,21 @@ npm run lint
 npm run build
 ```
 
-Expected result: every command exits zero. `npm test` covers detector/cohort behavior, generated evaluation metadata, policy attacks, deterministic canary assignment, authenticated session integrity/expiry, run isolation, approval receipts, audit hash-chain verification, command idempotency, exact webhook correlation, duplicate delivery, and late-event monotonicity.
+All commands must exit zero.
 
-## Local judge walkthrough
+## Judge walkthrough
 
-1. Copy `.env.example` to `.env.local` and run `npm run dev`.
-2. Open `http://localhost:3000` in two private browser windows.
-3. In each window sign in with a distinct operator ID and local access code `kept-demo`.
-4. Confirm that the two browser/API sessions use different run IDs and actions in one window do not move the other.
-5. Complete: Inject → Investigate → Approve canary → Run canary → Evaluate → Approve promotion.
-6. Expand the evidence drawer. Confirm two approvals, unique receipt digests, a changing audit hash, 160 evaluation windows, and six policy attacks.
-7. Without integrations, choose Create Test Mode proof. Confirm the UI reports an integration failure in the **Prove** chapter and does not fabricate a provider URL.
-
-## Connected Razorpay Test Mode walkthrough
-
-After the project owner configures integrations:
-
-1. Create the Test Mode proof after promotion and record the Payment Link ID/reference shown in the UI.
-2. Pay only with the owner's Razorpay Test Mode instrument.
-3. Confirm the verified webhook moves the run to `test_payment_captured` and only the Test Mode ledger becomes ₹400.
-4. Choose **Replay duplicate webhook**. Confirm the run completes without increasing the Test Mode ledger.
-5. Send or replay a correctly signed webhook carrying another Payment Link ID. Confirm it is recorded/ignored and does not capture the run.
-6. Confirm Supabase contains one `webhook_receipts` row for the provider event and two append-only `approval_receipts` rows.
+1. Open `/` and enter a vague phone request.
+2. Answer the adaptive questions; confirm no shortlist appears early. Click any completed preference chip and verify it must be answered again.
+3. Inspect Best fit, Best value, and Alternative, including matches, trade-offs, current prices, variants, and any promotion disclosure.
+4. Choose a product, accept or skip the optional budget-safe add-ons, and review the exact cart.
+5. In a second window, sign in at `/merchant` with development code `choosy-demo`. Select the same session and choose **Mark unavailable**.
+6. Return to the shopper and confirm the cart. Verify checkout is blocked before Razorpay, the reason is explained, and fresh compliant alternatives appear without substitution.
+7. Select a replacement, re-confirm the cart, then click **Pay securely with Razorpay**. Verify the browser redirects to Razorpay Test Mode.
+8. Complete an owner-controlled Test Mode payment. Return to the shopper and merchant cockpit; verify paid state and the signed webhook audit event.
+9. Replay the same provider event and a correctly signed mismatched event. Neither may change the amount or duplicate paid state.
+10. Open `/api/commerce/capabilities` and `/api/catalog` to show the agent-readable surface.
 
 ## Production preflight
 
-Use HTTPS; set both operator-auth variables; confirm the four integration indicators independently; verify no `SUPABASE_SECRET_KEY`, Razorpay secret, Gemini key, or session secret appears in browser bundles or logs; and use only synthetic/Test Mode data during judging.
+Use HTTPS; apply migration 004; configure all `CHOOSY_*`, Gemini, Supabase, Razorpay Test Mode, webhook, and commerce API variables; update the webhook URL; verify no secret appears in client bundles; and use only fictional inventory and Test Mode instruments.

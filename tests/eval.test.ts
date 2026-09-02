@@ -1,29 +1,16 @@
 import { describe, expect, it } from "vitest";
-import { runLockedBenchmark } from "@/lib/benchmark";
-import { detectIncident } from "@/lib/detector";
-import { loadReplayFixture } from "@/lib/fixtures";
-import { eligibleCases } from "@/lib/policy";
-import { computeReplayLedger } from "@/lib/simulator";
+import { DEMO_CATALOG } from "@/lib/catalog";
+import { isProfileComplete, rankProducts } from "@/lib/commerce-policy";
+import type { PreferenceProfile } from "@/lib/types";
 
-describe("Kept release gates", () => {
-  it("passes the locked holdout quality and safety thresholds", () => {
-    const metrics = runLockedBenchmark();
-    expect(metrics.detectionPrecision).toBeGreaterThanOrEqual(0.9);
-    expect(metrics.detectionRecall).toBeGreaterThanOrEqual(0.9);
-    expect(metrics.cohortF1).toBeGreaterThanOrEqual(0.85);
-    expect(metrics.playbookAccuracy).toBeGreaterThanOrEqual(0.8);
-    expect(metrics.policyViolations).toBe(0);
-    expect(metrics.duplicateExecutions).toBe(0);
-    expect(metrics.postRecoveryContacts).toBe(0);
-  });
+const cases: PreferenceProfile[]=[
+  {category:"phones",maxBudgetPaise:50_000_00,useCase:"Photography",brandPreference:"No preference",mustHaves:["camera"],answers:{os:"Android",priority:"Camera",size:"Standard"},confirmedKeys:["category","maxBudgetPaise","useCase","brandPreference","mustHaves","os","priority","size"]},
+  {category:"headphones",maxBudgetPaise:15_000_00,useCase:"Travel",brandPreference:"No preference",mustHaves:["noise cancellation"],answers:{formFactor:"Over-ear",environment:"Commute",feature:"Noise cancellation",connectivity:"Wireless"},confirmedKeys:["category","maxBudgetPaise","useCase","brandPreference","mustHaves","formFactor","environment","feature","connectivity"]},
+  {category:"running-shoes",maxBudgetPaise:9_000_00,useCase:"Fitness",brandPreference:"No preference",mustHaves:[],answers:{size:"UK 9",terrain:"Road",distance:"10 km+",cushioning:"Soft"},confirmedKeys:["category","maxBudgetPaise","useCase","brandPreference","mustHaves","size","terrain","distance","cushioning"]},
+];
 
-  it("beats the declared baseline without increasing customer contacts", () => {
-    const fixture = loadReplayFixture();
-    const incident = detectIncident(fixture.payments);
-    expect(incident).not.toBeNull();
-    const ledger = computeReplayLedger(eligibleCases(fixture.payments, incident!));
-    expect(ledger.simulatedAmountPaise).toBeGreaterThan(ledger.baselineAmountPaise);
-    expect(ledger.simulatedContacts).toBeLessThanOrEqual(ledger.baselineContacts);
-    expect(ledger.razorpayTestAmountPaise).toBe(0);
-  });
+describe("Choosy release gates",()=>{
+  it("blocks every incomplete scenario",()=>{ for(const complete of cases){const partial={...complete,confirmedKeys:complete.confirmedKeys.filter((key)=>key!=="brandPreference")};expect(isProfileComplete(partial)).toBe(false);expect(rankProducts(partial,DEMO_CATALOG)).toEqual([]);} });
+  it("keeps every recommendation in catalog, in stock, and within budget",()=>{ for(const profile of cases){const results=rankProducts(profile,DEMO_CATALOG);expect(results.length).toBeGreaterThan(0);for(const result of results){const product=DEMO_CATALOG.find((item)=>item.id===result.productId);expect(product).toBeDefined();const variant=product!.variants.find((item)=>item.id===result.variantId);expect(variant?.stock).toBeGreaterThan(0);expect(variant!.pricePaise).toBeLessThanOrEqual(profile.maxBudgetPaise!);}} });
+  it("never returns an unavailable variant",()=>{const catalog=structuredClone(DEMO_CATALOG);for(const product of catalog)for(const variant of product.variants)variant.stock=0;for(const profile of cases)expect(rankProducts(profile,catalog)).toEqual([]);});
 });

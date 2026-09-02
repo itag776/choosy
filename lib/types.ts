@@ -1,245 +1,155 @@
-export type RunPhase =
-  | "idle" | "incident_streaming" | "incident_detected" | "investigating"
-  | "agent_failure"
-  | "awaiting_canary_approval" | "canary_approved" | "canary_running"
-  | "canary_complete" | "evaluating_promotion" | "awaiting_promotion_approval"
-  | "promoted" | "payment_link_creating" | "payment_link_created"
-  | "test_payment_captured" | "completed" | "rejected" | "stopped"
-  | "escalated" | "integration_failure";
+export type ProductCategory = "phones" | "headphones" | "running-shoes";
 
-export type PaymentMethod = "card" | "upi" | "netbanking" | "mandate";
-export type PaymentStatus = "captured" | "failed" | "pending";
-export type ActionId = "timed_retry" | "multi_rail_link" | "upi_only_link" | "observe_escalate";
-export type PlaybookId = ActionId;
+export type ShoppingPhase =
+  | "discovering"
+  | "recommendations_ready"
+  | "item_selected"
+  | "cart_review"
+  | "checkout_creating"
+  | "checkout_ready"
+  | "needs_reselection"
+  | "payment_failed"
+  | "paid"
+  | "agent_failure";
 
-export interface PaymentAttempt {
-  id: string;
-  customerId: string;
-  amountPaise: number;
-  method: PaymentMethod;
-  issuer: string;
-  status: PaymentStatus;
-  errorReason: string | null;
-  errorSource: string | null;
-  errorStep: string | null;
-  consent: boolean;
-  contactsLast24h: number;
-  createdAt: string;
+export interface QuestionDefinition {
+  key: string;
+  prompt: string;
+  choices: string[];
+  required: boolean;
+  weight: number;
 }
 
-export interface CompetingHypothesis {
-  id: string;
+export interface CategoryProfile {
+  category: ProductCategory;
   label: string;
-  support: number;
-  evidence: string;
-  disposition: "supported" | "rejected";
+  description: string;
+  version: string;
+  questions: QuestionDefinition[];
 }
 
-export interface IncidentEvidence {
+export interface PreferenceProfile {
+  category: ProductCategory | null;
+  maxBudgetPaise: number | null;
+  useCase: string | null;
+  brandPreference: string | null;
+  mustHaves: string[];
+  answers: Record<string, string>;
+  confirmedKeys: string[];
+}
+
+export interface ProductVariant {
   id: string;
-  title: string;
-  cohort: { issuer: string; method: PaymentMethod; errorStep: string; errorReason: string };
-  cohortQuery: string;
-  affectedAttempts: number;
-  failedAttempts: number;
-  baselineSuccessRate: number;
-  observedSuccessRate: number;
-  deltaPercentagePoints: number;
-  incidentScore: number;
-  revenueAtRiskPaise: number;
-  topError: string;
-  detectedAt: string;
-  thresholds: { minimumSample: number; minimumDropPercentagePoints: number };
-  competingHypotheses: CompetingHypothesis[];
-  source: "deterministic_detector";
+  sku: string;
+  label: string;
+  pricePaise: number;
+  stock: number;
+  attributes: Record<string, string>;
 }
 
-export interface CandidatePlaybook {
-  id: ActionId;
+export interface Product {
+  id: string;
+  sku: string;
+  category: ProductCategory;
+  kind: "primary" | "addon";
+  brand: string;
   name: string;
-  action: "retry_original" | "payment_link" | "observe_escalate";
-  timingMinutes: number;
-  enabledMethods: Array<"card" | "upi" | "netbanking">;
-  targetCohort: string;
-  rationale: string;
-  risks: string[];
-  contactCount: number;
-  amountPolicy: "preserve_original";
-  channel: "email" | "none";
-  rank: number;
-  selected: boolean;
+  description: string;
+  imageUrl: string;
+  promoted: boolean;
+  tags: string[];
+  attributes: Record<string, string | number | boolean>;
+  variants: ProductVariant[];
 }
 
-export interface PolicyDecision {
-  outcome: "allow" | "require_approval" | "reject";
-  reasons: string[];
-  checkedRules: Array<{ id: string; label: string; outcome: "pass" | "approval" | "reject" }>;
-  evaluatedAt: string;
-}
-
-export interface ToolEvidence {
-  name: string;
-  callId?: string;
-  status: "completed" | "failed";
-  summary: string;
-}
-
-export interface InvestigationResult {
-  mode: "gemini_agent" | "gemini_cache";
-  model: string;
-  inputDigest: string;
-  promptVersion: string;
-  catalogVersion: string;
-  decision: "test" | "hold" | "escalate";
-  primaryHypothesis: string;
-  supportingEvidence: string[];
-  rejectedHypotheses: string[];
-  uncertainty: string;
-  eligibleCaseCount: number;
-  playbooks: CandidatePlaybook[];
-  rankedActions: CandidatePlaybook[];
-  rejectedActionReasons: Array<{ actionId: ActionId; reason: string }>;
-  toolEvents: ToolEvidence[];
-  responseId?: string;
-  semanticValidation: "passed" | "cache_validated";
-}
-
-export interface CanaryAssignment {
-  caseId: string;
-  playbookId: PlaybookId;
-  ordinal: number;
-  committed: true;
-}
-
-export interface PlaybookResult {
-  playbookId: PlaybookId;
-  attempted: number;
-  recovered: number;
-  recoveredAmountPaise: number;
-  conversionRate: number;
-  contacts: number;
-}
-
-export interface CanaryResult {
-  seed: number;
-  assignments: CanaryAssignment[];
-  results: PlaybookResult[];
-  winnerId: PlaybookId;
-  liftMultiple: number;
-  sampleWarning: string;
-  comparison: {
-    absoluteLift: number;
-    recoveredValueDifferencePaise: number;
-    confidenceLevel: 0.95;
-    confidenceInterval: [number, number];
-    minimumPerArm: 40;
-    gate: "pass" | "extend" | "stop";
-    gateReasons: string[];
-  };
-  completedAt: string;
-}
-
-export interface PromotionRecommendation {
-  mode: "statistical_gate";
-  model: string;
-  recommendation: "promote" | "extend_canary" | "stop" | "escalate";
-  playbookId: PlaybookId | null;
-  evidence: string[];
+export interface Recommendation {
+  productId: string;
+  variantId: string;
+  label: "Best fit" | "Best value" | "Alternative";
+  fitScore: number;
+  matchedNeeds: string[];
+  tradeoff: string;
   reason: string;
-  uncertainty: string;
-  stoppingConditions: string[];
-  toolEvents: ToolEvidence[];
-  responseId?: string;
-  semanticValidation: "passed";
+  promotionInfluencedTie: boolean;
 }
 
-export interface ExternalAction {
+export interface CartItem {
+  productId: string;
+  variantId: string;
+  quantity: 1;
+  unitPricePaise: number;
+  kind: "primary" | "addon";
+}
+
+export interface Cart {
   id: string;
-  runId: string;
-  type: "razorpay_payment_link";
+  items: CartItem[];
+  totalPaise: number;
+  digest: string;
+  confirmedAt?: string;
+}
+
+export interface Quote {
+  id: string;
+  cart: Cart;
+  catalogVersion: string;
+  expiresAt: string;
+  digest: string;
+}
+
+export interface CheckoutAction {
+  id: string;
+  sessionId: string;
+  cartId: string;
+  cartDigest: string;
+  quoteDigest: string;
   idempotencyKey: string;
   referenceId: string;
-  caseId: string;
   amountPaise: number;
-  status: "intent_recorded" | "creating" | "created" | "paid" | "failed" | "preview";
+  status: "intent_recorded" | "preview" | "created" | "paid" | "failed";
   providerId?: string;
   shortUrl?: string;
   providerStatus?: string;
-  notificationMedium: "email" | "none";
-  notificationStatus: "not_requested" | "pending" | "accepted" | "failed" | "stopped";
-  maskedRecipient?: string;
-  notificationAcceptedAt?: string;
   requestDigest: string;
   failureReason?: string;
   createdAt: string;
   updatedAt: string;
 }
 
-export interface RecoveryLedger {
-  simulatedAmountPaise: number;
-  baselineAmountPaise: number;
-  razorpayTestAmountPaise: number;
-  simulatedCases: number;
-  baselineCases: number;
-  testModeCases: number;
-  simulatedContacts: number;
-  baselineContacts: number;
-}
-
-export interface ReplayCampaignEvent {
+export interface ChatMessage {
   id: string;
-  sequence: number;
-  caseId: string;
-  playbookId: PlaybookId | "baseline_generic";
-  kind: "intervention_dispatched" | "recovery_captured" | "contact_stopped";
-  amountPaise: number;
+  role: "user" | "assistant";
+  text: string;
   createdAt: string;
 }
 
-export interface BenchmarkMetrics {
-  detectionPrecision: number;
-  detectionRecall: number;
-  cohortF1: number;
-  playbookAccuracy: number;
-  policyViolations: number;
-  duplicateExecutions: number;
-  postRecoveryContacts: number;
-  evaluatedCases: number;
-  safetyCases: number;
-  truePositives: number;
-  falsePositives: number;
-  falseNegatives: number;
-  datasetHash: string;
-  confidenceLevel: 0.95;
-  intervals: {
-    detectionPrecision: [number, number];
-    detectionRecall: [number, number];
-    playbookAccuracy: [number, number];
-  };
-  generatedAt: string;
+export interface AgentEvidence {
+  name: string;
+  status: "completed" | "failed";
+  summary: string;
+  callId?: string;
 }
 
-export interface ApprovalReceipt {
-  id: string;
-  type: "canary" | "promotion";
-  actorId: string;
-  actorRole: "operator";
-  reason: string;
-  runId: string;
-  approvedVersion: number;
-  policyDigest: string;
-  cohortDigest: string;
-  receiptDigest: string;
-  createdAt: string;
+export interface AgentTurnResult {
+  mode: "gemini_agent" | "gemini_cache";
+  model: string;
+  inputDigest: string;
+  promptVersion: string;
+  catalogVersion: string;
+  profilePatch: Partial<PreferenceProfile>;
+  confirmedKeys: string[];
+  toolEvents: AgentEvidence[];
+  responseId?: string;
+  semanticValidation: "passed" | "cache_validated";
 }
 
-export interface AuditEvent {
+export interface CommerceAuditEvent {
   id: string;
   sequence: number;
-  kind: "demo" | "detector" | "agent" | "tool" | "policy" | "approval" | "canary" | "campaign" | "razorpay" | "webhook" | "guardrail";
+  kind: "session" | "shopper" | "agent" | "catalog" | "policy" | "cart" | "inventory" | "razorpay" | "webhook" | "guardrail";
   title: string;
   detail: string;
-  actor: "system" | "agent" | "operator" | "razorpay";
+  actor: "shopper" | "agent" | "system" | "merchant" | "razorpay";
   status: "info" | "success" | "warning" | "blocked";
   evidence?: Record<string, unknown>;
   previousHash: string;
@@ -249,63 +159,44 @@ export interface AuditEvent {
 
 export interface CommandReceipt {
   idempotencyKey: string;
-  command: RunCommand;
+  command: ShoppingCommand | "send_message";
   version: number;
   completedAt: string;
 }
 
-export interface RecoveryRunSnapshot {
+export interface ShoppingSessionSnapshot {
   id: string;
   merchantId: string;
-  phase: RunPhase;
-  cycle: number;
-  resumePhase?: RunPhase;
+  phase: ShoppingPhase;
   version: number;
-  fixtureVersion: string;
-  incident: IncidentEvidence | null;
-  investigation: InvestigationResult | null;
-  policyDecision: PolicyDecision | null;
-  canaryAssignments: CanaryAssignment[];
-  canary: CanaryResult | null;
-  promotion: PromotionRecommendation | null;
-  externalAction: ExternalAction | null;
-  ledger: RecoveryLedger;
-  campaignEvents: ReplayCampaignEvent[];
-  metrics: BenchmarkMetrics;
-  audit: AuditEvent[];
-  approvals: ApprovalReceipt[];
+  profile: PreferenceProfile;
+  activeQuestionKey: string | null;
+  messages: ChatMessage[];
+  recommendations: Recommendation[];
+  selectedProductId: string | null;
+  selectedVariantId: string | null;
+  offeredAddonIds: string[];
+  cart: Cart | null;
+  quote: Quote | null;
+  checkout: CheckoutAction | null;
+  audit: CommerceAuditEvent[];
   commandReceipts: CommandReceipt[];
+  processedWebhookIds: string[];
+  catalogVersion: string;
   integration: {
     gemini: boolean;
     razorpay: boolean;
     webhookSecret: boolean;
     persistence: "supabase" | "local_file";
   };
-  dataset: {
-    name: string;
-    version: string;
-    seed: number;
-    manifestHash: string;
-    totalAttempts: number;
-    holdoutPercent: number;
-  };
   createdAt: string;
   updatedAt: string;
 }
 
-export interface StoredRecoveryRun extends RecoveryRunSnapshot {
-  payments: PaymentAttempt[];
-  processedWebhookIds: string[];
-}
+export type ShoppingCommand = "select_product" | "set_addons" | "confirm_cart" | "create_checkout" | "retry_payment" | "reset_session" | "revise_preference";
 
-export type RunCommand =
-  | "reset_replay" | "inject_incident" | "investigate" | "approve_canary"
-  | "reject_canary" | "run_canary" | "evaluate_promotion"
-  | "approve_promotion" | "stop" | "escalate" | "create_test_link"
-  | "sync_test_link" | "replay_demo_webhook";
-
-export interface RunCommandRequest {
-  command: RunCommand;
+export interface ShoppingCommandRequest {
+  command: ShoppingCommand;
   expectedVersion: number;
   idempotencyKey: string;
   payload?: Record<string, unknown>;
@@ -314,21 +205,18 @@ export interface RunCommandRequest {
 export interface OperatorIdentity {
   actorId: string;
   role: "operator";
-  runId: string;
+  merchantId: string;
 }
 
-export interface InterventionOutcome {
-  caseId: string;
-  outcomes: Record<ActionId | "baseline_generic", boolean>;
-}
-
-export interface ReplayManifest {
-  name: string;
-  version: string;
-  seed: number;
-  totalAttempts: number;
-  affectedAttempts: number;
-  holdoutPercent: number;
-  generatedAt: string;
-  hashes: { payments: string; causalModel: string; holdout: string };
+export interface MerchantDashboard {
+  sessions: ShoppingSessionSnapshot[];
+  metrics: {
+    totalSessions: number;
+    recommendationRate: number;
+    cartRate: number;
+    checkoutRate: number;
+    paidTestModePaise: number;
+    addonAttachRate: number;
+  };
+  integration: ShoppingSessionSnapshot["integration"];
 }

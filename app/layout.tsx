@@ -1,17 +1,15 @@
 import type { Metadata } from "next";
-import { Inter } from "next/font/google";
 import "./globals.css";
-
-const inter = Inter({ subsets: ["latin"], variable: "--font-inter", display: "swap" });
+import "./choosy.css";
 
 export const metadata: Metadata = {
-  title: "Kept — Revenue recovery, governed",
-  description: "Find revenue at risk, test the safest recovery, and win it back.",
+  title: "Choosy — Shopping that listens",
+  description: "A bounded conversational buying agent with transparent recommendations and Razorpay Test Mode checkout.",
 };
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
-    <html lang="en" className={inter.variable}>
+    <html lang="en">
       <body>{children}</body>
     </html>
   );

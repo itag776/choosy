@@ -1,40 +1,33 @@
-import { ACTION_CATALOG_VERSION, AVAILABLE_ACTIONS } from "@/lib/policy";
-import { AGENT_PROMPT_VERSION, agentInputDigest, PINNED_AGENT_MODEL } from "@/lib/recovery-agent";
-import type { CandidatePlaybook, IncidentEvidence, InvestigationResult, PaymentAttempt } from "@/lib/types";
+import { DEMO_CATALOG } from "@/lib/catalog";
+import { createShoppingSession } from "@/lib/commerce-data";
+import type { AgentTurnResult, CheckoutAction, Product, ShoppingSessionSnapshot } from "@/lib/types";
+import type { CommerceRepository, WebhookTransitionResult } from "@/lib/repository";
 
-export function testInvestigation(incident: IncidentEvidence, eligible: PaymentAttempt[]): InvestigationResult {
-  const rankedActions: CandidatePlaybook[] = AVAILABLE_ACTIONS.map((definition, index) => ({
-    id: definition.id,
-    name: definition.name,
-    action: definition.action,
-    timingMinutes: definition.id === "timed_retry" ? 30 : 0,
-    enabledMethods: [...definition.methods],
-    targetCohort: `Eligible ${incident.cohort.issuer} ${incident.cohort.method} failures`,
-    rationale: `Test decision ranks ${definition.name} against the measured incident evidence.`,
-    risks: ["Synthetic outcomes do not estimate live merchant lift."],
-    contactCount: definition.channel === "none" ? 0 : 1,
-    amountPolicy: "preserve_original",
-    channel: definition.channel,
-    rank: index + 1,
-    selected: definition.id === "timed_retry" || definition.id === "multi_rail_link",
-  }));
-  return {
-    mode: "gemini_agent",
-    model: PINNED_AGENT_MODEL,
-    inputDigest: agentInputDigest({ incident, eligible }),
-    promptVersion: AGENT_PROMPT_VERSION,
-    catalogVersion: ACTION_CATALOG_VERSION,
-    decision: "test",
-    primaryHypothesis: "Issuer authentication degradation is concentrated in the measured card cohort.",
-    supportingEvidence: ["Failures share issuer and authentication step.", "Observed success fell materially below baseline."],
-    rejectedHypotheses: ["Customer error does not explain the concentrated bank-source failures."],
-    uncertainty: "The causal replay validates software decisions, not live merchant uplift.",
-    eligibleCaseCount: eligible.length,
-    playbooks: rankedActions.filter((action) => action.selected),
-    rankedActions,
-    rejectedActionReasons: rankedActions.filter((action) => !action.selected).map((action) => ({ actionId: action.id, reason: "A more distinct action pair provides a clearer causal comparison." })),
-    toolEvents: ["getIncidentEvidence", "readMerchantRecoveryPolicy", "listEligibleCases", "inspectAvailableActions", "compareFailureExplanations"].map((name) => ({ name, status: "completed", summary: "Typed read tool completed." })),
-    responseId: "response_test",
-    semanticValidation: "passed",
-  };
+export const TEST_SESSION_ID = "shop_aaaaaaaaaaaaaaaaaaaaaaaa";
+
+export class MemoryCommerceRepository implements CommerceRepository {
+  sessions = new Map<string, ShoppingSessionSnapshot>();
+  catalog: Product[] = structuredClone(DEMO_CATALOG);
+  cache = new Map<string, AgentTurnResult>();
+  checkouts: CheckoutAction[] = [];
+  webhooks = new Set<string>();
+  constructor() { const session = createShoppingSession(new Date("2026-09-03T10:00:00.000Z"), TEST_SESSION_ID); this.sessions.set(session.id, session); }
+  async create(session: ShoppingSessionSnapshot) { this.sessions.set(session.id, structuredClone(session)); return structuredClone(session); }
+  async get(sessionId: string) { const session = this.sessions.get(sessionId); if (!session) throw new Error("Session not found."); return structuredClone(session); }
+  async replace(current: ShoppingSessionSnapshot, next: ShoppingSessionSnapshot) { const stored = this.sessions.get(current.id); if (!stored || stored.version !== current.version) throw new Error("conflict"); this.sessions.set(next.id, structuredClone(next)); return structuredClone(next); }
+  async list() { return [...this.sessions.values()].map((item) => structuredClone(item)); }
+  async getCatalog() { return structuredClone(this.catalog); }
+  async setVariantStock(variantId: string, stock: number) { for (const product of this.catalog) { const variant = product.variants.find((item) => item.id === variantId); if (variant) variant.stock = stock; } }
+  async saveAgentRun(_sessionId: string, result: AgentTurnResult) { this.cache.set(result.inputDigest, result); }
+  async findAgentCache(inputDigest: string) { return this.cache.get(inputDigest) ?? null; }
+  async saveCheckout(action: CheckoutAction) { this.checkouts.push(structuredClone(action)); }
+  async applyWebhook(current: ShoppingSessionSnapshot, next: ShoppingSessionSnapshot, eventId: string): Promise<WebhookTransitionResult> { if (this.webhooks.has(eventId)) return { duplicate: true, session: current }; this.webhooks.add(eventId); this.sessions.set(next.id, structuredClone(next)); return { duplicate: false, session: structuredClone(next) }; }
+}
+
+export async function completePhoneDiscovery(repository: MemoryCommerceRepository) {
+  const { sendShoppingMessage } = await import("@/lib/commerce-service");
+  let session = await repository.get(TEST_SESSION_ID);
+  const answers = [["category","Phone"],["maxBudgetPaise","₹50,000"],["useCase","Photography"],["brandPreference","No preference"],["mustHaves","No deal-breakers"],["os","Android"],["priority","Camera"],["size","Standard"]] as const;
+  for (const [key,value] of answers) session = await sendShoppingMessage(TEST_SESSION_ID,{ text:value,answerKey:key,answerValue:value,expectedVersion:session.version,idempotencyKey:`msg:${key}:test` });
+  return session;
 }
