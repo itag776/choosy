@@ -1,23 +1,41 @@
+import { createHash } from "node:crypto";
 import { Agent, OpenAIProvider, Runner, tool } from "@openai/agents";
 import { z } from "zod";
-import { AVAILABLE_ACTIONS, MERCHANT_POLICY } from "@/lib/policy";
+import { ACTION_CATALOG_VERSION, AVAILABLE_ACTIONS, MERCHANT_POLICY } from "@/lib/policy";
 import type { CanaryResult, CandidatePlaybook, IncidentEvidence, InvestigationResult, PaymentAttempt, PromotionRecommendation, ToolEvidence } from "@/lib/types";
 
 export const PINNED_AGENT_MODEL = "gemini-3.5-flash-lite";
+export const AGENT_PROMPT_VERSION = "recovery-decision-v2";
 const GEMINI_OPENAI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/";
 const GEMINI_RUN_TIMEOUT_MS = 30_000;
 let geminiRunner: Runner | undefined;
+
+export class AgentDecisionUnavailableError extends Error {
+  constructor(message = "Gemini could not produce a validated recovery decision and no exact cache entry exists.") { super(message); }
+}
+
+function stableJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  if (value && typeof value === "object") return `{${Object.entries(value as Record<string, unknown>).sort(([a], [b]) => a.localeCompare(b)).map(([key, item]) => `${JSON.stringify(key)}:${stableJson(item)}`).join(",")}}`;
+  return JSON.stringify(value) ?? "null";
+}
+
+export function agentInputDigest(input: { incident: IncidentEvidence; eligible: PaymentAttempt[] }): string {
+  return createHash("sha256").update(stableJson({
+    promptVersion: AGENT_PROMPT_VERSION,
+    catalogVersion: ACTION_CATALOG_VERSION,
+    model: PINNED_AGENT_MODEL,
+    policy: MERCHANT_POLICY,
+    incident: input.incident,
+    eligibleCaseIds: input.eligible.map((payment) => payment.id).sort(),
+  })).digest("hex");
+}
 
 function getGeminiRunner(): Runner | null {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) return null;
   geminiRunner ??= new Runner({
-    modelProvider: new OpenAIProvider({
-      apiKey,
-      baseURL: GEMINI_OPENAI_BASE_URL,
-      useResponses: false,
-      strictFeatureValidation: true,
-    }),
+    modelProvider: new OpenAIProvider({ apiKey, baseURL: GEMINI_OPENAI_BASE_URL, useResponses: false, strictFeatureValidation: true }),
     tracingDisabled: true,
     traceIncludeSensitiveData: false,
   });
@@ -25,123 +43,49 @@ function getGeminiRunner(): Runner | null {
 }
 
 async function withTransientRetry<T>(operation: () => Promise<T>): Promise<T> {
-  try {
-    return await operation();
-  } catch (error) {
+  try { return await operation(); } catch (error) {
     const status = typeof error === "object" && error && "status" in error ? Number(error.status) : undefined;
     if (status !== 429 && status !== 503) throw error;
     await new Promise((resolve) => setTimeout(resolve, 800));
     return operation();
   }
 }
-const REQUIRED_INVESTIGATION_TOOLS = [
-  "getIncidentEvidence", "readMerchantRecoveryPolicy", "listEligibleCases",
-  "inspectAvailableActions", "compareFailureExplanations",
-] as const;
 
-const PlaybookSchema = z.object({
-  id: z.enum(["wait_retry", "alternate_link"]),
+const ActionSchema = z.object({
+  id: z.enum(["timed_retry", "multi_rail_link", "upi_only_link", "observe_escalate"]),
   name: z.string().min(3).max(100),
-  action: z.enum(["retry_original", "payment_link"]),
-  timingMinutes: z.number().int().min(0).max(1_440),
-  enabledMethods: z.array(z.enum(["card", "upi", "netbanking"])).min(1),
+  action: z.enum(["retry_original", "payment_link", "observe_escalate"]),
+  timingMinutes: z.number().int().min(0).max(120),
+  enabledMethods: z.array(z.enum(["card", "upi", "netbanking"])).max(3),
   targetCohort: z.string().min(3),
   rationale: z.string().min(10),
   risks: z.array(z.string().min(3)).min(1).max(4),
   contactCount: z.number().int().min(0).max(1),
   amountPolicy: z.literal("preserve_original"),
+  channel: z.enum(["email", "none"]),
+  rank: z.number().int().min(1).max(4),
+  selected: z.boolean(),
 });
 
 const InvestigationSchema = z.object({
+  decision: z.enum(["test", "hold", "escalate"]),
   primaryHypothesis: z.string().min(10),
   supportingEvidence: z.array(z.string().min(5)).min(2).max(6),
   rejectedHypotheses: z.array(z.string().min(5)).min(1).max(5),
   uncertainty: z.string().min(10),
   eligibleCaseCount: z.number().int().nonnegative(),
-  playbooks: z.array(PlaybookSchema).length(2),
+  rankedActions: z.array(ActionSchema).length(4),
+  rejectedActionReasons: z.array(z.object({ actionId: z.enum(["timed_retry", "multi_rail_link", "upi_only_link", "observe_escalate"]), reason: z.string().min(8) })).max(4),
 });
 
-const PromotionSchema = z.object({
-  recommendation: z.enum(["promote", "extend_canary", "stop", "escalate"]),
-  playbookId: z.enum(["wait_retry", "alternate_link"]).nullable(),
-  evidence: z.array(z.string().min(5)).min(2).max(6),
-  reason: z.string().min(10),
-  uncertainty: z.string().min(10),
-  stoppingConditions: z.array(z.string().min(5)).min(2).max(5),
-});
+const REQUIRED_INVESTIGATION_TOOLS = ["getIncidentEvidence", "readMerchantRecoveryPolicy", "listEligibleCases", "inspectAvailableActions", "compareFailureExplanations"] as const;
 
-function parseModelJson<T>(value: unknown, schema: z.ZodType<T>, normalize: (parsed: unknown) => unknown = (parsed) => parsed): T {
+function parseModelJson(value: unknown): z.infer<typeof InvestigationSchema> {
   if (typeof value !== "string") throw new Error("Gemini returned a non-text final answer.");
   const firstBrace = value.indexOf("{");
   const lastBrace = value.lastIndexOf("}");
   if (firstBrace < 0 || lastBrace <= firstBrace) throw new Error("Gemini did not return a JSON object.");
-  return schema.parse(normalize(JSON.parse(value.slice(firstBrace, lastBrace + 1))));
-}
-
-function normalizeInvestigationOutput(value: unknown): unknown {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return value;
-  const record = value as Record<string, unknown>;
-  if (!record.playbooks || typeof record.playbooks !== "object") return value;
-  const playbooks = Array.isArray(record.playbooks)
-    ? record.playbooks
-    : Object.values(record.playbooks as Record<string, unknown>);
-  return {
-    ...record,
-    playbooks: playbooks.map((playbook) => {
-      if (!playbook || typeof playbook !== "object" || Array.isArray(playbook)) return playbook;
-      const candidate = playbook as Record<string, unknown>;
-      const canonicalId = candidate.action === "retry_original" ? "wait_retry" :
-        candidate.action === "payment_link" ? "alternate_link" : candidate.id;
-      return { ...candidate, id: canonicalId };
-    }),
-  };
-}
-
-function fallbackPlaybooks(incident: IncidentEvidence): CandidatePlaybook[] {
-  const cohort = `Eligible ${incident.cohort.issuer} ${incident.cohort.method} failures`;
-  return [
-    {
-      id: "wait_retry", name: "Timed issuer retry", action: "retry_original", timingMinutes: 30,
-      enabledMethods: ["card"], targetCohort: cohort,
-      rationale: "Wait for a possible issuer recovery, then retry the original method without changing the amount.",
-      risks: ["The issuer may remain degraded", "Another card attempt can create customer fatigue"],
-      contactCount: 1, amountPolicy: "preserve_original",
-    },
-    {
-      id: "alternate_link", name: "Alternate-method recovery link", action: "payment_link", timingMinutes: 0,
-      enabledMethods: ["upi", "netbanking"], targetCohort: cohort,
-      rationale: "Bypass the degraded card path with a bounded payment link offering UPI and netbanking.",
-      risks: ["Customers must complete a new checkout", "A twelve-case canary has wide uncertainty"],
-      contactCount: 1, amountPolicy: "preserve_original",
-    },
-  ];
-}
-
-function deterministicToolEvents(incident: IncidentEvidence, eligibleCount: number): ToolEvidence[] {
-  return [
-    { name: "getIncidentEvidence", status: "completed", summary: `${incident.failedAttempts} failures; ${incident.deltaPercentagePoints.toFixed(1)}pp drop.` },
-    { name: "readMerchantRecoveryPolicy", status: "completed", summary: "Six deterministic recovery constraints loaded." },
-    { name: "listEligibleCases", status: "completed", summary: `${eligibleCount} cases remain after consent and contact limits.` },
-    { name: "inspectAvailableActions", status: "completed", summary: "Retry and Standard Payment Link actions are available." },
-    { name: "compareFailureExplanations", status: "completed", summary: "Issuer degradation outranks customer and platform-wide explanations." },
-  ];
-}
-
-export function fallbackInvestigation(incident: IncidentEvidence, eligibleCount: number): InvestigationResult {
-  return {
-    mode: "deterministic_fallback", model: "deterministic-policy-v1",
-    primaryHypothesis: `A concentrated ${incident.cohort.errorStep} failure is isolated to ${incident.cohort.issuer}; customer-caused errors do not explain the shift.`,
-    supportingEvidence: [
-      `${incident.failedAttempts} failures share issuer, method, step and reason.`,
-      `Success fell ${incident.deltaPercentagePoints.toFixed(1)} percentage points from the measured baseline.`,
-    ],
-    rejectedHypotheses: incident.competingHypotheses.filter((item) => item.disposition === "rejected").map((item) => `${item.label}: ${item.evidence}`),
-    uncertainty: "Deterministic replay validates workflow behavior, not causal real-world uplift.",
-    eligibleCaseCount: eligibleCount,
-    playbooks: fallbackPlaybooks(incident),
-    toolEvents: deterministicToolEvents(incident, eligibleCount),
-    semanticValidation: "fallback",
-  };
+  return InvestigationSchema.parse(JSON.parse(value.slice(firstBrace, lastBrace + 1)));
 }
 
 function captureToolEvents(result: { newItems: Array<{ toJSON(): unknown }> }): ToolEvidence[] {
@@ -149,80 +93,70 @@ function captureToolEvents(result: { newItems: Array<{ toJSON(): unknown }> }): 
   for (const item of result.newItems) {
     const serialized = item.toJSON() as { rawItem?: { type?: string; name?: string; callId?: string; status?: string } };
     const raw = serialized.rawItem;
-    if (raw?.type === "function_call" && raw.name) {
-      calls.push({ name: raw.name, callId: raw.callId, status: raw.status === "incomplete" ? "failed" : "completed", summary: "Typed read tool completed." });
-    }
+    if (raw?.type === "function_call" && raw.name) calls.push({ name: raw.name, callId: raw.callId, status: raw.status === "incomplete" ? "failed" : "completed", summary: "Typed read tool completed." });
   }
   return calls;
 }
 
-function validInvestigation(output: z.infer<typeof InvestigationSchema>, tools: ToolEvidence[], eligibleCount: number): boolean {
-  const ids = new Set(output.playbooks.map((playbook) => playbook.id));
+function validDecision(output: z.infer<typeof InvestigationSchema>, tools: ToolEvidence[], eligibleCount: number): boolean {
+  const ids = new Set(output.rankedActions.map((action) => action.id));
+  const ranks = new Set(output.rankedActions.map((action) => action.rank));
+  const selected = output.rankedActions.filter((action) => action.selected);
   const toolNames = new Set(tools.map((item) => item.name));
-  return output.playbooks.length === 2 && ids.size === 2 && ids.has("wait_retry") && ids.has("alternate_link") &&
-    output.eligibleCaseCount === eligibleCount &&
-    output.playbooks.every((playbook) =>
-      playbook.amountPolicy === "preserve_original" &&
-      playbook.enabledMethods.every((method) => ["card", "upi", "netbanking"].includes(method)),
-    ) &&
-    REQUIRED_INVESTIGATION_TOOLS.every((name) => toolNames.has(name));
+  const fullCatalog = AVAILABLE_ACTIONS.every((action) => ids.has(action.id)) && ids.size === AVAILABLE_ACTIONS.length && ranks.size === 4;
+  const selectionValid = output.decision === "test" ? selected.length === 2 : selected.length === 0;
+  return output.eligibleCaseCount === eligibleCount && fullCatalog && selectionValid && REQUIRED_INVESTIGATION_TOOLS.every((name) => toolNames.has(name));
 }
 
-export async function investigateIncident(input: { incident: IncidentEvidence; eligible: PaymentAttempt[] }): Promise<InvestigationResult> {
-  const fallback = fallbackInvestigation(input.incident, input.eligible.length);
+export function validCachedInvestigation(cached: InvestigationResult | null | undefined, inputDigest: string): cached is InvestigationResult {
+  if (!cached || cached.inputDigest !== inputDigest || cached.model !== PINNED_AGENT_MODEL || cached.promptVersion !== AGENT_PROMPT_VERSION || cached.catalogVersion !== ACTION_CATALOG_VERSION) return false;
+  const selected = cached.rankedActions.filter((action) => action.selected);
+  return cached.mode !== "gemini_cache" && cached.semanticValidation === "passed" && cached.rankedActions.length === 4 && cached.decision === "test" && selected.length === 2;
+}
+
+export async function investigateIncident(input: { incident: IncidentEvidence; eligible: PaymentAttempt[]; cached?: InvestigationResult | null }): Promise<InvestigationResult> {
+  const inputDigest = agentInputDigest(input);
   const runner = getGeminiRunner();
-  if (!runner) return fallback;
+  if (!runner) {
+    if (validCachedInvestigation(input.cached, inputDigest)) return { ...input.cached, mode: "gemini_cache", semanticValidation: "cache_validated" };
+    throw new AgentDecisionUnavailableError();
+  }
 
   const tools = [
     tool({ name: "getIncidentEvidence", description: "Return measured incident evidence.", parameters: z.object({ incidentId: z.string() }), execute: async () => input.incident }),
     tool({ name: "readMerchantRecoveryPolicy", description: "Read the merchant recovery policy.", parameters: z.object({ merchantId: z.string() }), execute: async () => ({ merchantId: "merchant_demo", policy: MERCHANT_POLICY }) }),
     tool({ name: "listEligibleCases", description: "Count cases after consent and contact limits.", parameters: z.object({ incidentId: z.string() }), execute: async () => ({ eligibleCaseCount: input.eligible.length, excludedCount: input.incident.failedAttempts - input.eligible.length }) }),
-    tool({ name: "inspectAvailableActions", description: "List the only actions the product can safely execute.", parameters: z.object({ incidentId: z.string() }), execute: async () => AVAILABLE_ACTIONS }),
+    tool({ name: "inspectAvailableActions", description: "Read the complete bounded action catalogue. Rank these actions; do not invent another.", parameters: z.object({ incidentId: z.string() }), execute: async () => ({ version: ACTION_CATALOG_VERSION, actions: AVAILABLE_ACTIONS }) }),
     tool({ name: "compareFailureExplanations", description: "Compare measured competing incident explanations.", parameters: z.object({ incidentId: z.string() }), execute: async () => input.incident.competingHypotheses }),
   ];
-
   const agent = new Agent({
-    name: "Kept Recovery Agent", model: PINNED_AGENT_MODEL, tools,
-    modelSettings: {
-      reasoning: { effort: "minimal" },
-      parallelToolCalls: true,
-      temperature: 0,
-    },
-    instructions: `Investigate a payment incident. Call all five independent tools together in the first turn, then answer with only one valid JSON object and no markdown. The object must have primaryHypothesis (string), supportingEvidence (2-6 strings), rejectedHypotheses (1-5 strings), uncertainty (string), eligibleCaseCount (integer), and playbooks. playbooks MUST be a JSON array in square brackets containing exactly two objects, with ids wait_retry and alternate_link. Each playbook must include name, action (retry_original or payment_link), timingMinutes, enabledMethods (an array containing only card, upi, or netbanking), targetCohort, rationale, risks (1-4 strings), contactCount (0 or 1), and amountPolicy exactly preserve_original. Preserve every amount, use only supported methods, never target ineligible customers, and be explicit about uncertainty. Do not claim simulated money is real revenue.`,
+    name: "Kept Recovery Decision Agent",
+    model: PINNED_AGENT_MODEL,
+    tools,
+    modelSettings: { reasoning: { effort: "minimal" }, parallelToolCalls: true, temperature: 0 },
+    instructions: `You are the only component that chooses which recovery actions are worth testing. Call all five read tools in the first turn. Return only one JSON object. Rank all four catalogue actions exactly once using ranks 1-4. For a test decision, mark exactly two meaningfully different actions selected=true; mark the other two false and explain each rejection. Do not select both link variants unless the evidence makes an original-method retry unsafe. For hold or escalate, select none. Copy each catalogue action's id, action, allowed methods, channel and timing bounds exactly; you may choose timing within its bounds. Include decision, primaryHypothesis, 2-6 supportingEvidence strings, 1-5 rejectedHypotheses strings, uncertainty, eligibleCaseCount, rankedActions, and rejectedActionReasons. Every action preserves the original amount. Never inspect or claim knowledge of replay outcomes. Never describe synthetic recovery as real revenue.`,
   });
 
   try {
-    const result = await withTransientRetry(() => runner.run(agent, `Investigate ${input.incident.id} for merchant_demo.`, {
-      maxTurns: 4, signal: AbortSignal.timeout(GEMINI_RUN_TIMEOUT_MS),
-    }));
-    if (!result.finalOutput) return fallback;
-    const parsed = parseModelJson(result.finalOutput, InvestigationSchema, normalizeInvestigationOutput);
+    const result = await withTransientRetry(() => runner.run(agent, `Investigate ${input.incident.id} for merchant_demo.`, { maxTurns: 4, signal: AbortSignal.timeout(GEMINI_RUN_TIMEOUT_MS) }));
+    if (!result.finalOutput) throw new Error("Gemini returned no final decision.");
+    const parsed = parseModelJson(result.finalOutput);
     const toolEvents = captureToolEvents(result);
-    if (!validInvestigation(parsed, toolEvents, input.eligible.length)) return fallback;
+    if (!validDecision(parsed, toolEvents, input.eligible.length)) throw new Error("Gemini decision failed semantic validation.");
+    const playbooks = parsed.rankedActions.filter((action) => action.selected) as CandidatePlaybook[];
     return {
-      mode: "gemini_agent", model: PINNED_AGENT_MODEL, ...parsed, toolEvents,
-      responseId: result.lastResponseId, semanticValidation: "passed",
+      mode: "gemini_agent", model: PINNED_AGENT_MODEL, inputDigest, promptVersion: AGENT_PROMPT_VERSION, catalogVersion: ACTION_CATALOG_VERSION,
+      ...parsed, playbooks, toolEvents, responseId: result.lastResponseId, semanticValidation: "passed",
     };
   } catch (error) {
-    console.error("Kept Gemini investigation fallback", error);
-    return fallback;
+    if (validCachedInvestigation(input.cached, inputDigest)) return { ...input.cached, mode: "gemini_cache", semanticValidation: "cache_validated" };
+    console.error("Kept Gemini decision unavailable", error);
+    throw new AgentDecisionUnavailableError();
   }
 }
 
 export function isDirectionallyPromotable(canary: CanaryResult): boolean {
-  const winner = canary.results.find((result) => result.playbookId === canary.winnerId);
-  const challenger = canary.results.find((result) => result.playbookId !== canary.winnerId);
-  const assignmentIds = new Set(canary.assignments.map((assignment) => assignment.caseId));
-  return Boolean(
-    winner && challenger &&
-    canary.results.length === 2 && canary.assignments.length === 12 && assignmentIds.size === 12 &&
-    canary.assignments.every((assignment) => assignment.committed) &&
-    winner.attempted === 6 && challenger.attempted === 6 &&
-    winner.contacts === winner.attempted && challenger.contacts === challenger.attempted &&
-    winner.recovered > challenger.recovered &&
-    winner.recoveredAmountPaise > challenger.recoveredAmountPaise &&
-    canary.liftMultiple > 1
-  );
+  return canary.comparison.gate === "pass" && canary.assignments.length === 80 && new Set(canary.assignments.map((assignment) => assignment.caseId)).size === 80;
 }
 
 export function fallbackPromotion(canary: CanaryResult): PromotionRecommendation {
@@ -230,50 +164,23 @@ export function fallbackPromotion(canary: CanaryResult): PromotionRecommendation
   const challenger = canary.results.find((result) => result.playbookId !== canary.winnerId)!;
   const promotable = isDirectionallyPromotable(canary);
   return {
-    mode: "deterministic_fallback", model: "deterministic-policy-v1", recommendation: promotable ? "promote" : "extend_canary",
+    mode: "statistical_gate", model: "agresti-caffo-95-v1", recommendation: promotable ? "promote" : "extend_canary",
     playbookId: promotable ? canary.winnerId : null,
     evidence: [
       `${winner.recovered}/${winner.attempted} recovered for ${winner.playbookId}.`,
       `${challenger.recovered}/${challenger.attempted} recovered for ${challenger.playbookId}.`,
+      `95% uplift interval ${(canary.comparison.confidenceInterval[0] * 100).toFixed(1)} to ${(canary.comparison.confidenceInterval[1] * 100).toFixed(1)} percentage points.`,
     ],
     reason: promotable
-      ? "The pre-approved directional gate passed; propose the measured winner for human-approved synthetic replay expansion."
-      : "The directional gate did not pass; collect more evidence before proposing expansion.",
+      ? "The pre-committed 40 × 40 test cleared sample, value, uplift, and 95% evidence gates."
+      : `Expansion withheld: ${canary.comparison.gateReasons.join(" ")}`,
     uncertainty: canary.sampleWarning,
     stoppingConditions: ["Stop after payment capture", "Stop on any policy violation", "Escalate if provider state cannot be reconciled"],
-    toolEvents: [{ name: "getCanaryResults", status: "completed", summary: "Persisted assignments and measured replay outcomes read." }],
-    semanticValidation: "fallback",
+    toolEvents: [{ name: "computeEvidenceGate", status: "completed", summary: "Pre-registered statistical thresholds evaluated." }],
+    semanticValidation: "passed",
   };
 }
 
 export async function evaluatePromotion(canary: CanaryResult): Promise<PromotionRecommendation> {
-  const fallback = fallbackPromotion(canary);
-  const runner = getGeminiRunner();
-  if (!runner) return fallback;
-  const getCanaryResults = tool({
-    name: "getCanaryResults", description: "Read persisted canary assignments and measured results.",
-    parameters: z.object({ campaignId: z.string() }), execute: async () => canary,
-  });
-  const agent = new Agent({
-    name: "Kept Recovery Agent", model: PINNED_AGENT_MODEL, tools: [getCanaryResults],
-    modelSettings: { reasoning: { effort: "minimal" }, temperature: 0 },
-    instructions: "Call getCanaryResults, then answer with only one valid JSON object and no markdown. Include recommendation (promote, extend_canary, stop, or escalate), playbookId (wait_retry, alternate_link, or null), evidence (2-6 strings), reason, uncertainty, and stoppingConditions (2-5 strings). Here, promote means only a human-approved expansion inside the deterministic synthetic replay; it never means a real-money rollout. Recommend promote when the committed 6-versus-6 replay is complete, the declared winner has both more recoveries and more recovered value than the challenger, and liftMultiple is above 1. Otherwise recommend extend_canary, stop, or escalate. Never call twelve cases statistically conclusive. If promoting, select only the measured winner and preserve stopping conditions.",
-  });
-  try {
-    const result = await withTransientRetry(() => runner.run(agent, "Evaluate the completed canary for promotion.", {
-      maxTurns: 3, signal: AbortSignal.timeout(GEMINI_RUN_TIMEOUT_MS),
-    }));
-    if (!result.finalOutput) return fallback;
-    const parsed = parseModelJson(result.finalOutput, PromotionSchema);
-    const toolEvents = captureToolEvents(result);
-    const expectedPromote = isDirectionallyPromotable(canary);
-    const valid = toolEvents.some((item) => item.name === "getCanaryResults") &&
-      (parsed.recommendation !== "promote" || parsed.playbookId === canary.winnerId) &&
-      (expectedPromote ? parsed.recommendation === "promote" : parsed.recommendation !== "promote");
-    if (!valid) return fallback;
-    return { mode: "gemini_agent", model: PINNED_AGENT_MODEL, ...parsed, toolEvents, responseId: result.lastResponseId, semanticValidation: "passed" };
-  } catch (error) {
-    console.error("Kept Gemini promotion fallback", error);
-    return fallback;
-  }
+  return fallbackPromotion(canary);
 }

@@ -44,7 +44,7 @@ export function createInitialRun(now = new Date(), runId = DEFAULT_RUN_ID): Stor
     metrics: runLockedBenchmark(), audit: [], approvals: [], commandReceipts: [], payments: [], processedWebhookIds: [],
     integration: {
       gemini: Boolean(process.env.GEMINI_API_KEY),
-      razorpay: Boolean(process.env.RAZORPAY_KEY_ID && process.env.RAZORPAY_KEY_SECRET),
+      razorpay: Boolean(process.env.RAZORPAY_KEY_ID && process.env.RAZORPAY_KEY_SECRET && process.env.RECOVERY_TEST_EMAIL),
       webhookSecret: Boolean(process.env.RAZORPAY_WEBHOOK_SECRET),
       persistence: process.env.NEXT_PUBLIC_SUPABASE_URL && (process.env.SUPABASE_SECRET_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY) ? "supabase" : "local_file",
     },

@@ -1,8 +1,7 @@
 import { createHash } from "node:crypto";
 import { detectIncident } from "@/lib/detector";
 import { loadReplayFixture } from "@/lib/fixtures";
-import { eligibleCases, evaluatePlaybooks, selectRecoveryPlaybook } from "@/lib/policy";
-import { fallbackInvestigation } from "@/lib/recovery-agent";
+import { AVAILABLE_ACTIONS, eligibleCases, evaluatePlaybooks } from "@/lib/policy";
 import { executeReplayCampaign } from "@/lib/simulator";
 import type { BenchmarkMetrics, CandidatePlaybook, PaymentAttempt, PlaybookId } from "@/lib/types";
 
@@ -15,6 +14,32 @@ interface EvaluationScenario {
 }
 
 function ratio(numerator: number, denominator: number): number { return denominator ? numerator / denominator : 0; }
+
+function baselineRuleSelection(incident: NonNullable<ReturnType<typeof detectIncident>>): PlaybookId {
+  const reason = incident.cohort.errorReason.toLowerCase();
+  if (reason.includes("timeout") || reason.includes("temporary") || reason.includes("rate_limit")) return "timed_retry";
+  if (incident.cohort.method === "upi") return "multi_rail_link";
+  return "multi_rail_link";
+}
+
+function benchmarkActions(incident: NonNullable<ReturnType<typeof detectIncident>>): CandidatePlaybook[] {
+  const cohort = `Eligible ${incident.cohort.issuer} ${incident.cohort.method} failures`;
+  return AVAILABLE_ACTIONS.map((definition, index) => ({
+    id: definition.id,
+    name: definition.name,
+    action: definition.action,
+    timingMinutes: definition.id === "timed_retry" ? 30 : 0,
+    enabledMethods: [...definition.methods],
+    targetCohort: cohort,
+    rationale: `Bounded benchmark action ${definition.id} for the measured incident cohort.`,
+    risks: ["Synthetic benchmark evidence does not estimate live lift."],
+    contactCount: definition.channel === "none" ? 0 : 1,
+    amountPolicy: "preserve_original",
+    channel: definition.channel,
+    rank: index + 1,
+    selected: definition.id === "timed_retry" || definition.id === "multi_rail_link",
+  }));
+}
 
 function wilson(successes: number, total: number): [number, number] {
   if (!total) return [0, 0];
@@ -59,15 +84,15 @@ export function generateAdversarialScenarios(): EvaluationScenario[] {
     if (kind === 0 || kind === 1) {
       const method = "card" as const;
       const reason = kind === 0 ? "issuer_authentication_unavailable" : "issuer_bank_offline";
-      scenarios.push({ id, payments: scenarioPayments({ ...base, method, total: 58 + index % 13, failures: 25 + index % 8, reason, source: "bank" }), actualIncident: true, expectedCohort: { issuer, method, errorStep: "payment_authentication", errorReason: reason }, expectedPlaybook: "alternate_link" });
+      scenarios.push({ id, payments: scenarioPayments({ ...base, method, total: 58 + index % 13, failures: 25 + index % 8, reason, source: "bank" }), actualIncident: true, expectedCohort: { issuer, method, errorStep: "payment_authentication", errorReason: reason }, expectedPlaybook: "multi_rail_link" });
     } else if (kind === 2) {
       const method = "card" as const;
       const reason = "issuer_temporary_timeout";
-      scenarios.push({ id, payments: scenarioPayments({ ...base, method, total: 62 + index % 9, failures: 22 + index % 7, reason, source: "bank" }), actualIncident: true, expectedCohort: { issuer, method, errorStep: "payment_authentication", errorReason: reason }, expectedPlaybook: "wait_retry" });
+      scenarios.push({ id, payments: scenarioPayments({ ...base, method, total: 62 + index % 9, failures: 22 + index % 7, reason, source: "bank" }), actualIncident: true, expectedCohort: { issuer, method, errorStep: "payment_authentication", errorReason: reason }, expectedPlaybook: "timed_retry" });
     } else if (kind === 3) {
       const method = "upi" as const;
       const reason = "issuer_authentication_unavailable";
-      scenarios.push({ id, payments: scenarioPayments({ ...base, method, total: 54 + index % 11, failures: 21 + index % 6, reason, source: "bank" }), actualIncident: true, expectedCohort: { issuer, method, errorStep: "payment_authentication", errorReason: reason }, expectedPlaybook: "alternate_link" });
+      scenarios.push({ id, payments: scenarioPayments({ ...base, method, total: 54 + index % 11, failures: 21 + index % 6, reason, source: "bank" }), actualIncident: true, expectedCohort: { issuer, method, errorStep: "payment_authentication", errorReason: reason }, expectedPlaybook: "multi_rail_link" });
     } else if (kind === 4) {
       scenarios.push({ id, payments: scenarioPayments({ ...base, method: "card", total: 70, failures: 5 + index % 3, reason: "issuer_soft_decline", source: "bank" }), actualIncident: false, expectedCohort: null, expectedPlaybook: null });
     } else if (kind === 5) {
@@ -78,7 +103,7 @@ export function generateAdversarialScenarios(): EvaluationScenario[] {
       const method = "card" as const;
       const reason = "issuer_authentication_degraded";
       const adjudicatedIncident = index % 32 === 7;
-      scenarios.push({ id, payments: scenarioPayments({ ...base, method, total: 80, failures: 11 + index % 2, reason, source: "bank" }), actualIncident: adjudicatedIncident, expectedCohort: adjudicatedIncident ? { issuer, method, errorStep: "payment_authentication", errorReason: reason } : null, expectedPlaybook: adjudicatedIncident ? "wait_retry" : null });
+      scenarios.push({ id, payments: scenarioPayments({ ...base, method, total: 80, failures: 11 + index % 2, reason, source: "bank" }), actualIncident: adjudicatedIncident, expectedCohort: adjudicatedIncident ? { issuer, method, errorStep: "payment_authentication", errorReason: reason } : null, expectedPlaybook: adjudicatedIncident ? "timed_retry" : null });
     }
   }
   return scenarios;
@@ -88,18 +113,19 @@ function unsafePolicyAllows(): { violations: number; cases: number } {
   const fixture = loadReplayFixture();
   const incident = detectIncident(fixture.payments)!;
   const eligible = eligibleCases(fixture.payments, incident);
-  const valid = fallbackInvestigation(incident, eligible.length).playbooks;
-  const unsupported = structuredClone(valid) as unknown as Array<Omit<CandidatePlaybook, "enabledMethods"> & { enabledMethods: string[] }>;
+  const ranked = benchmarkActions(incident);
+  const valid = ranked.filter((action) => action.selected);
+  const unsupported = structuredClone(ranked) as unknown as Array<Omit<CandidatePlaybook, "enabledMethods"> & { enabledMethods: string[] }>;
   unsupported[0]!.enabledMethods = ["crypto"];
-  const attacks: Array<{ playbooks: CandidatePlaybook[]; eligible: PaymentAttempt[] }> = [
-    { playbooks: valid.slice(0, 1), eligible },
-    { playbooks: valid.map((item, index) => index === 0 ? { ...item, amountPolicy: "discount" as CandidatePlaybook["amountPolicy"] } : item), eligible },
-    { playbooks: unsupported as CandidatePlaybook[], eligible },
-    { playbooks: valid.map((item, index) => index === 0 ? { ...item, contactCount: 2 } : item), eligible },
-    { playbooks: valid, eligible: [...eligible, { ...fixture.payments[0]!, consent: false }] },
-    { playbooks: [valid[0]!, valid[0]!], eligible },
+  const attacks: Array<{ playbooks: CandidatePlaybook[]; ranked: CandidatePlaybook[]; eligible: PaymentAttempt[] }> = [
+    { playbooks: valid.slice(0, 1), ranked, eligible },
+    { playbooks: valid, ranked: ranked.map((item, index) => index === 0 ? { ...item, amountPolicy: "discount" as CandidatePlaybook["amountPolicy"] } : item), eligible },
+    { playbooks: valid, ranked: unsupported as CandidatePlaybook[], eligible },
+    { playbooks: valid, ranked: ranked.map((item, index) => index === 0 ? { ...item, contactCount: 2 } : item), eligible },
+    { playbooks: valid, ranked, eligible: [...eligible, { ...fixture.payments[0]!, consent: false }] },
+    { playbooks: [valid[0]!, valid[0]!], ranked, eligible },
   ];
-  return { cases: attacks.length, violations: attacks.filter((attack) => evaluatePlaybooks(incident, attack.playbooks, attack.eligible).outcome !== "reject").length };
+  return { cases: attacks.length, violations: attacks.filter((attack) => evaluatePlaybooks(incident, attack.playbooks, attack.eligible, attack.ranked).outcome !== "reject").length };
 }
 
 export function runLockedBenchmark(now = new Date("2026-08-20T12:00:00.000Z")): BenchmarkMetrics {
@@ -121,7 +147,7 @@ export function runLockedBenchmark(now = new Date("2026-08-20T12:00:00.000Z")): 
     overlapAffected += [...predictedIds].filter((id) => actualIds.has(id)).length;
     if (incident && scenario.expectedPlaybook) {
       selectionCases += 1;
-      if (selectRecoveryPlaybook(incident) === scenario.expectedPlaybook) correctSelections += 1;
+      if (baselineRuleSelection(incident) === scenario.expectedPlaybook) correctSelections += 1;
     }
   }
   const cohortPrecision = ratio(overlapAffected, predictedAffected);

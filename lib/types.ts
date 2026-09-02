@@ -1,5 +1,6 @@
 export type RunPhase =
   | "idle" | "incident_streaming" | "incident_detected" | "investigating"
+  | "agent_failure"
   | "awaiting_canary_approval" | "canary_approved" | "canary_running"
   | "canary_complete" | "evaluating_promotion" | "awaiting_promotion_approval"
   | "promoted" | "payment_link_creating" | "payment_link_created"
@@ -8,7 +9,8 @@ export type RunPhase =
 
 export type PaymentMethod = "card" | "upi" | "netbanking" | "mandate";
 export type PaymentStatus = "captured" | "failed" | "pending";
-export type PlaybookId = "wait_retry" | "alternate_link";
+export type ActionId = "timed_retry" | "multi_rail_link" | "upi_only_link" | "observe_escalate";
+export type PlaybookId = ActionId;
 
 export interface PaymentAttempt {
   id: string;
@@ -53,9 +55,9 @@ export interface IncidentEvidence {
 }
 
 export interface CandidatePlaybook {
-  id: PlaybookId;
+  id: ActionId;
   name: string;
-  action: "retry_original" | "payment_link";
+  action: "retry_original" | "payment_link" | "observe_escalate";
   timingMinutes: number;
   enabledMethods: Array<"card" | "upi" | "netbanking">;
   targetCohort: string;
@@ -63,6 +65,9 @@ export interface CandidatePlaybook {
   risks: string[];
   contactCount: number;
   amountPolicy: "preserve_original";
+  channel: "email" | "none";
+  rank: number;
+  selected: boolean;
 }
 
 export interface PolicyDecision {
@@ -80,17 +85,23 @@ export interface ToolEvidence {
 }
 
 export interface InvestigationResult {
-  mode: "gemini_agent" | "deterministic_fallback";
+  mode: "gemini_agent" | "gemini_cache";
   model: string;
+  inputDigest: string;
+  promptVersion: string;
+  catalogVersion: string;
+  decision: "test" | "hold" | "escalate";
   primaryHypothesis: string;
   supportingEvidence: string[];
   rejectedHypotheses: string[];
   uncertainty: string;
   eligibleCaseCount: number;
   playbooks: CandidatePlaybook[];
+  rankedActions: CandidatePlaybook[];
+  rejectedActionReasons: Array<{ actionId: ActionId; reason: string }>;
   toolEvents: ToolEvidence[];
   responseId?: string;
-  semanticValidation: "passed" | "fallback";
+  semanticValidation: "passed" | "cache_validated";
 }
 
 export interface CanaryAssignment {
@@ -116,11 +127,20 @@ export interface CanaryResult {
   winnerId: PlaybookId;
   liftMultiple: number;
   sampleWarning: string;
+  comparison: {
+    absoluteLift: number;
+    recoveredValueDifferencePaise: number;
+    confidenceLevel: 0.95;
+    confidenceInterval: [number, number];
+    minimumPerArm: 40;
+    gate: "pass" | "extend" | "stop";
+    gateReasons: string[];
+  };
   completedAt: string;
 }
 
 export interface PromotionRecommendation {
-  mode: "gemini_agent" | "deterministic_fallback";
+  mode: "statistical_gate";
   model: string;
   recommendation: "promote" | "extend_canary" | "stop" | "escalate";
   playbookId: PlaybookId | null;
@@ -130,7 +150,7 @@ export interface PromotionRecommendation {
   stoppingConditions: string[];
   toolEvents: ToolEvidence[];
   responseId?: string;
-  semanticValidation: "passed" | "fallback";
+  semanticValidation: "passed";
 }
 
 export interface ExternalAction {
@@ -145,6 +165,10 @@ export interface ExternalAction {
   providerId?: string;
   shortUrl?: string;
   providerStatus?: string;
+  notificationMedium: "email" | "none";
+  notificationStatus: "not_requested" | "pending" | "accepted" | "failed" | "stopped";
+  maskedRecipient?: string;
+  notificationAcceptedAt?: string;
   requestDigest: string;
   failureReason?: string;
   createdAt: string;
@@ -295,9 +319,7 @@ export interface OperatorIdentity {
 
 export interface InterventionOutcome {
   caseId: string;
-  wait_retry: boolean;
-  alternate_link: boolean;
-  baseline_generic: boolean;
+  outcomes: Record<ActionId | "baseline_generic", boolean>;
 }
 
 export interface ReplayManifest {
@@ -308,5 +330,5 @@ export interface ReplayManifest {
   affectedAttempts: number;
   holdoutPercent: number;
   generatedAt: string;
-  hashes: { payments: string; outcomes: string; holdout: string };
+  hashes: { payments: string; causalModel: string; holdout: string };
 }

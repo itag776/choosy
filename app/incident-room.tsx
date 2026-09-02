@@ -7,8 +7,9 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { presentationFor } from "@/lib/presentation";
+import { inconclusiveEvidenceExample } from "@/lib/statistics";
 import type {
-  AuditEvent, CandidatePlaybook, OperatorIdentity, RecoveryRunSnapshot, RunCommand, RunPhase,
+  ActionId, AuditEvent, CandidatePlaybook, OperatorIdentity, RecoveryRunSnapshot, RunCommand, RunPhase,
 } from "@/lib/types";
 
 const transitional = new Set<RunPhase>([
@@ -17,7 +18,7 @@ const transitional = new Set<RunPhase>([
 
 const chapters: Array<{ label: string; phases: RunPhase[] }> = [
   { label: "Detect", phases: ["idle", "incident_streaming", "incident_detected"] },
-  { label: "Understand", phases: ["investigating", "awaiting_canary_approval"] },
+  { label: "Understand", phases: ["investigating", "agent_failure", "awaiting_canary_approval"] },
   { label: "Test", phases: ["canary_approved", "canary_running", "canary_complete", "rejected"] },
   { label: "Decide", phases: ["evaluating_promotion", "awaiting_promotion_approval", "stopped", "escalated"] },
   { label: "Prove", phases: ["promoted", "payment_link_creating", "payment_link_created", "test_payment_captured", "completed", "integration_failure"] },
@@ -37,9 +38,10 @@ type DrawerName = "evidence" | "explanation";
 function primaryAction(state: RecoveryRunSnapshot): PrimaryAction | null {
   switch (state.phase) {
     case "idle": return { command: "inject_incident", label: "Start incident", hint: "Check the verified payment replay", icon: Play };
-    case "incident_detected": return { command: "investigate", label: "Find the cause", hint: "Check evidence and recovery options", icon: Bot };
-    case "awaiting_canary_approval": return { command: "approve_canary", label: "Approve 12-case test", hint: "Allow only the committed 6 × 6 replay", icon: LockKeyhole };
-    case "canary_approved": return { command: "run_canary", label: "Run the test", hint: "Compare two options on 12 cases", icon: FlaskConical };
+    case "incident_detected":
+    case "agent_failure": return { command: "investigate", label: state.phase === "agent_failure" ? "Retry Gemini" : "Let Gemini decide", hint: "Rank four bounded recovery actions", icon: Bot };
+    case "awaiting_canary_approval": return { command: "approve_canary", label: "Approve 80-case test", hint: "Commit the selected 40 × 40 comparison", icon: LockKeyhole };
+    case "canary_approved": return { command: "run_canary", label: "Run the test", hint: "Measure both actions on 40 cases", icon: FlaskConical };
     case "canary_complete": return { command: "evaluate_promotion", label: "Compare results", hint: "Check the winner and stopping rules", icon: Bot };
     case "awaiting_promotion_approval": return { command: "approve_promotion", label: "Approve the winner", hint: "Authorize only the measured option", icon: Zap };
     case "promoted": return { command: "create_test_link", label: "Create ₹400 test payment", hint: "Verify the Razorpay provider path", icon: CircleDollarSign };
@@ -214,6 +216,7 @@ function Scene({ state }: { state: RecoveryRunSnapshot }) {
     case "incident_streaming": return <StreamingScene state={state} />;
     case "incident_detected": return <IncidentScene state={state} />;
     case "investigating": return <InvestigatingScene state={state} />;
+    case "agent_failure": return <AgentFailureScene state={state} />;
     case "awaiting_canary_approval":
     case "rejected": return <StrategyScene state={state} />;
     case "canary_approved": return <CanaryScene state={state} running={false} />;
@@ -278,7 +281,7 @@ function IncidentScene({ state }: { state: RecoveryRunSnapshot }) {
 }
 
 function InvestigatingScene({ state }: { state: RecoveryRunSnapshot }) {
-  const tools = ["Read incident evidence", "Check merchant policy", "Find eligible cases", "Compare recovery options", "Challenge the leading cause"];
+  const tools = ["Read incident evidence", "Check merchant policy", "Find eligible cases", "Rank four recovery actions", "Challenge the leading cause"];
   return <div className="scene investigating-scene">
     <div className="agent-orb"><Bot size={27} /></div>
     <StateIntro state={state} />
@@ -286,42 +289,54 @@ function InvestigatingScene({ state }: { state: RecoveryRunSnapshot }) {
   </div>;
 }
 
-function PlaybookCard({ playbook, index }: { playbook: CandidatePlaybook; index: number }) {
-  return <article className="playbook-card"><header><span>Option {index+1}</span><b>{playbook.timingMinutes ? `${playbook.timingMinutes} min` : "Now"}</b></header><h3>{playbook.name}</h3><p>{playbook.rationale}</p><footer>{playbook.enabledMethods.map(method=><span key={method}>{method.replaceAll("_"," ")}</span>)}</footer></article>;
+function AgentFailureScene({ state }: { state: RecoveryRunSnapshot }) {
+  return <div className="scene centered-scene terminal-scene"><div className="terminal-icon"><Bot size={27}/></div><StateIntro state={state}/><div className="agent-fail-note"><ShieldCheck size={16}/><span>No rules-based choice was substituted.</span></div></div>;
+}
+
+function PlaybookCard({ playbook }: { playbook: CandidatePlaybook }) {
+  return <article className={playbook.selected?"playbook-card selected":"playbook-card"}><header><span>#{playbook.rank}{playbook.selected?" · Selected":""}</span><b>{playbook.timingMinutes ? `${playbook.timingMinutes} min` : "Now"}</b></header><h3>{playbook.name}</h3><p>{playbook.rationale}</p><footer>{playbook.channel==="none"?<span>No contact</span>:playbook.enabledMethods.map(method=><span key={method}>{method.replaceAll("_"," ")}</span>)}</footer></article>;
 }
 
 function StrategyScene({ state }: { state: RecoveryRunSnapshot }) {
   const result=state.investigation!;
   return <div className="scene strategy-scene">
     <StateIntro state={state} />
-    <div className="playbook-grid">{result.playbooks.map((playbook,index)=><PlaybookCard key={playbook.id} playbook={playbook} index={index}/>)}</div>
-    <div className="policy-strip"><ShieldCheck size={20}/><div><b>Human approval required</b><span>Policy—not the model—controls execution.</span></div><em>{state.policyDecision?.checkedRules.length} rules passed</em></div>
+    <div className="decision-source"><Bot size={16}/><b>{result.mode==="gemini_cache"?"Validated Gemini cache":"Live Gemini"}</b><span>ranked the complete action catalogue</span></div>
+    <div className="playbook-grid ranked">{result.rankedActions.map((playbook)=><PlaybookCard key={playbook.id} playbook={playbook}/>)}</div>
+    <div className="policy-strip compact"><ShieldCheck size={18}/><div><b>Bounded by policy</b><span>Amount, consent, methods and contact limits passed.</span></div><em>{state.policyDecision?.checkedRules.length} checks</em></div>
   </div>;
 }
 
 function CanaryScene({ state, running }: { state: RecoveryRunSnapshot; running: boolean }) {
-  const assignments = state.canaryAssignments.length ? state.canaryAssignments : Array.from({length:12},(_,index)=>({ordinal:index+1,playbookId:index%2===0?"wait_retry":"alternate_link"}));
+  const selected = state.investigation?.playbooks.map((action)=>action.id) as [ActionId,ActionId] | undefined;
+  const assignments = state.canaryAssignments.length ? state.canaryAssignments : Array.from({length:80},(_,index)=>({ordinal:index+1,playbookId:selected?.[index<40?0:1]??(index<40?"timed_retry":"multi_rail_link")}));
+  const first=selected?.[0]??assignments[0]!.playbookId;
+  const second=selected?.[1]??assignments[40]!.playbookId;
   return <div className="scene canary-scene">
     <StateIntro state={state} />
-    <div className="canary-board"><div className="canary-label"><span>12 cases</span><b>6 × 6 split</b></div><div className="case-dots">{assignments.map((assignment,index)=><i key={index} className={assignment.playbookId === "alternate_link" ? "option-b" : "option-a"}>{assignment.ordinal}</i>)}</div></div>
-    <div className="canary-legend"><span><i className="option-a"/>Timed retry · 6</span><span><i className="option-b"/>Alternate link · 6</span>{running&&<em><LoaderCircle className="spin" size={14}/>Reading outcomes</em>}</div>
+    <div className="canary-board"><div className="canary-label"><span>80 committed cases</span><b>40 × 40</b></div><div className="case-dots large">{assignments.map((assignment,index)=><i key={index} className={assignment.playbookId === second ? "option-b" : "option-a"} aria-label={`Case ${assignment.ordinal}`}/>)}</div></div>
+    <div className="canary-legend"><span><i className="option-a"/>{actionName(state,first)} · 40</span><span><i className="option-b"/>{actionName(state,second)} · 40</span>{running&&<em><LoaderCircle className="spin" size={14}/>Generating sealed outcomes</em>}</div>
   </div>;
 }
 
 function ResultScene({ state }: { state: RecoveryRunSnapshot }) {
   const canary=state.canary!;
-  const wait=canary.results.find(item=>item.playbookId==="wait_retry")!;
-  const alternate=canary.results.find(item=>item.playbookId==="alternate_link")!;
+  const [first,second]=canary.results;
+  const winner=canary.results.find(item=>item.playbookId===canary.winnerId)!;
   const evaluating=state.phase==="evaluating_promotion";
   return <div className="scene result-scene">
     <StateIntro state={state} />
     <div className="result-card">
-      <ResultLane label="Timed retry" result={wait.recovered} total={wait.attempted} rate={wait.conversionRate} winner={canary.winnerId==="wait_retry"}/>
-      <ResultLane label="Alternate link" result={alternate.recovered} total={alternate.attempted} rate={alternate.conversionRate} winner={canary.winnerId==="alternate_link"}/>
+      <ResultLane label={actionName(state,first.playbookId)} result={first.recovered} total={first.attempted} rate={first.conversionRate} winner={canary.winnerId===first.playbookId}/>
+      <ResultLane label={actionName(state,second.playbookId)} result={second.recovered} total={second.attempted} rate={second.conversionRate} winner={canary.winnerId===second.playbookId}/>
     </div>
-    <div className="recommendation-strip">{evaluating?<LoaderCircle className="spin" size={19}/>:<Bot size={19}/>}<div><span>Kept recommends</span><b>{state.promotion?.reason ?? "Reviewing the measured winner and stop conditions."}</b></div><em>{canary.liftMultiple.toFixed(1)}× lift</em></div>
+    <div className="evidence-gate"><div><span>Incremental recovery</span><strong>{formatInr(canary.comparison.recoveredValueDifferencePaise)}</strong></div><div><span>Absolute lift</span><strong>+{Math.round(canary.comparison.absoluteLift*100)} pts</strong></div><div><span>95% interval</span><strong>{signedPoints(canary.comparison.confidenceInterval[0])} to {signedPoints(canary.comparison.confidenceInterval[1])}</strong></div></div>
+    <div className="recommendation-strip">{evaluating?<LoaderCircle className="spin" size={19}/>:<BadgeCheck size={19}/>}<div><span>{canary.comparison.gate==="pass"?"Evidence gate passed":"Expansion withheld"}</span><b>{state.promotion?.reason ?? `${actionName(state,winner.playbookId)} leads on payments, value and uncertainty.`}</b></div><em>{canary.liftMultiple.toFixed(1)}× lift</em></div>
   </div>;
 }
+
+function actionName(state:RecoveryRunSnapshot,id:ActionId):string { return state.investigation?.rankedActions.find(action=>action.id===id)?.name??id.replaceAll("_"," "); }
+function signedPoints(value:number):string { return `${value>=0?"+":""}${(value*100).toFixed(1)} pts`; }
 
 function ResultLane({label,result,total,rate,winner=false}:{label:string;result:number;total:number;rate:number;winner?:boolean}) {
   return <div className={winner?"result-lane winner":"result-lane"}><header><span>{label}</span>{winner&&<b><BadgeCheck size={14}/>Winner</b>}</header><div><i style={{width:`${rate*100}%`}}/></div><footer><strong>{percent(rate)}</strong><span>{result}/{total} recovered</span></footer></div>;
@@ -336,7 +351,7 @@ function ProofScene({ state }: { state: RecoveryRunSnapshot }) {
       <div><span>Recovered in replay</span><strong>{formatInr(state.ledger.simulatedAmountPaise)}</strong><small>{state.ledger.simulatedCases} synthetic cases</small></div>
       <div className="razorpay-ledger"><span>Razorpay Test Mode</span><strong>{formatInr(state.ledger.razorpayTestAmountPaise)}</strong><small>{state.ledger.testModeCases} sandbox captures</small></div>
     </div>
-    {action?<div className={failed?"provider-card failed":"provider-card"}><div><span>Payment reference</span><code>{action.referenceId}</code></div><div><span>Amount</span><b>{formatInr(action.amountPaise)}</b></div><div><span>Status</span><b>{action.providerStatus??action.status}</b></div>{action.shortUrl&&<a href={action.shortUrl} target="_blank" rel="noreferrer">Open payment <ExternalLink size={15}/></a>}{action.failureReason&&<p><TriangleAlert size={15}/>{action.failureReason}</p>}</div>:<div className="provider-empty"><LockKeyhole size={17}/><span>The payment reference is persisted before Razorpay is contacted.</span></div>}
+    {action?<><div className="provider-flow"><span className={action.providerId?"done":"current"}><Check size={13}/>Link created</span><span className={action.notificationStatus==="accepted"||action.notificationStatus==="stopped"?"done":"current"}><Check size={13}/>Email accepted</span><span className={action.status==="paid"?"done":""}><Check size={13}/>Payment captured</span><span className={action.notificationStatus==="stopped"?"done":""}><Check size={13}/>Contact stopped</span></div><div className={failed?"provider-card failed":"provider-card"}><div><span>Payment reference</span><code>{action.referenceId}</code></div><div><span>Recipient</span><b>{action.maskedRecipient??"Pending"}</b></div><div><span>Provider status</span><b>{action.providerStatus??action.status}</b></div>{action.shortUrl&&<a href={action.shortUrl} target="_blank" rel="noreferrer">Open payment <ExternalLink size={15}/></a>}{action.failureReason&&<p><TriangleAlert size={15}/>{action.failureReason}</p>}</div></>:<div className="provider-empty"><LockKeyhole size={17}/><span>The payment reference is persisted before Razorpay is contacted.</span></div>}
   </div>;
 }
 
@@ -344,7 +359,7 @@ function CompletedScene({ state }: { state: RecoveryRunSnapshot }) {
   const signedWebhook = state.audit.some((event) => event.kind === "webhook" && /captured|HMAC-verified/i.test(`${event.title} ${event.detail}`));
   const checks = [
     { label: "Fixture verified", complete: true },
-    { label: "Two human approvals", complete: state.approvals.length >= 2 },
+    { label: "Razorpay email accepted", complete: state.externalAction?.notificationStatus === "stopped" },
     { label: "Signed webhook matched", complete: signedWebhook },
     { label: "Duplicate execution blocked", complete: state.phase === "completed" },
   ];
@@ -362,7 +377,7 @@ function TerminalScene({ state }: { state: RecoveryRunSnapshot }) {
 function ActionDock({state,action,busy,perform,onExplain,explanationOpen}:{state:RecoveryRunSnapshot;action:PrimaryAction|null;busy:RunCommand|null;perform:(command:RunCommand,payload?:Record<string,unknown>)=>Promise<void>;onExplain:(trigger:HTMLButtonElement)=>void;explanationOpen:boolean}) {
   const ActionIcon=action?.icon??Activity;
   return <footer className="action-dock">
-    <div className="action-guidance"><div className="action-boundary"><ShieldCheck size={17}/><span><b>You stay in control</b> Kept asks before any recovery action.</span></div><button className="explain-control" onClick={(event)=>onExplain(event.currentTarget)} aria-expanded={explanationOpen} aria-controls="explanation-drawer"><Info size={15}/>How this works</button></div>
+    <div className="action-guidance"><div className="action-boundary"><ShieldCheck size={17}/><span><b>Bounded by policy</b> Amount, consent and contact limits stay fixed.</span></div><button className="explain-control" onClick={(event)=>onExplain(event.currentTarget)} aria-expanded={explanationOpen} aria-controls="explanation-drawer"><Info size={15}/>How this works</button></div>
     <div className="action-controls">
       {state.phase==="awaiting_canary_approval"&&<button className="secondary-command" disabled={Boolean(busy)} onClick={()=>void perform("reject_canary")}><Ban size={15}/>Reject</button>}
       {action&&<button className="primary-command" disabled={Boolean(busy)} onClick={()=>void perform(action.command, action.command==="approve_canary"||action.command==="approve_promotion"?{reason:"Authenticated operator reviewed the displayed evidence and authorized this bounded step."}:undefined)}>
@@ -393,6 +408,8 @@ function ExplanationDrawer({state,onClose,onViewEvidence}:{state:RecoveryRunSnap
 }
 
 function EvidenceDrawer({state,onClose}:{state:RecoveryRunSnapshot;onClose:()=>void}) {
+  const [showWeakEvidence,setShowWeakEvidence]=useState(false);
+  const weak=inconclusiveEvidenceExample();
   const integrations = [
     ["Gemini agent", state.integration.gemini], ["Razorpay Test Mode", state.integration.razorpay],
     ["Signed webhook", state.integration.webhookSecret], ["Supabase", state.integration.persistence==="supabase"],
@@ -402,7 +419,7 @@ function EvidenceDrawer({state,onClose}:{state:RecoveryRunSnapshot;onClose:()=>v
     <aside id="evidence-drawer" className="evidence-drawer" role="dialog" aria-modal="true" aria-labelledby="evidence-title">
       <header><div><span>Evidence</span><h2 id="evidence-title">The record behind each action.</h2></div><button data-drawer-close onClick={onClose} aria-label="Close evidence"><X size={20}/></button></header>
       <section><div className="drawer-section-title"><span>Systems</span><b>{integrations.filter(([,active])=>active).length}/4 connected</b></div><div className="integration-grid">{integrations.map(([label,active])=><div key={label}><i className={active?"active":""}/><span>{label}</span><b>{active?"Connected":"Not configured"}</b></div>)}</div></section>
-      <section><div className="drawer-section-title"><span>Evaluation</span><b>{state.metrics.evaluatedCases} windows</b></div><div className="evaluation-grid"><Metric label="Precision" value={percent(state.metrics.detectionPrecision)} detail="Pipeline"/><Metric label="Recall" value={percent(state.metrics.detectionRecall)} detail="Pipeline"/><Metric label="Cohort F1" value={percent(state.metrics.cohortF1)} detail="Segment"/><Metric label="Selection" value={percent(state.metrics.playbookAccuracy)} detail="Policy"/></div><p className="dataset-note"><FileCheck2 size={14}/>{state.metrics.safetyCases} adversarial cases · {state.metrics.datasetHash.slice(0,12)}</p></section>
+      <section><div className="drawer-section-title"><span>Evaluation</span><b>{state.metrics.evaluatedCases} windows</b></div><div className="evaluation-grid"><Metric label="Precision" value={percent(state.metrics.detectionPrecision)} detail="Pipeline"/><Metric label="Recall" value={percent(state.metrics.detectionRecall)} detail="Pipeline"/><Metric label="Cohort F1" value={percent(state.metrics.cohortF1)} detail="Segment"/><Metric label="Rules baseline" value={percent(state.metrics.playbookAccuracy)} detail="Comparison"/></div><p className="dataset-note"><FileCheck2 size={14}/>{state.metrics.safetyCases} adversarial cases · {state.metrics.datasetHash.slice(0,12)}</p><button className="weak-evidence-toggle" onClick={()=>setShowWeakEvidence(value=>!value)} aria-expanded={showWeakEvidence}>{showWeakEvidence?"Hide inconclusive result":"See an inconclusive result"}<ArrowRight size={14}/></button>{showWeakEvidence&&<div className="weak-evidence-card"><header><span>40 × 40 guardrail case</span><b>Do not promote</b></header><strong>52.5% vs 47.5%</strong><p>95% interval {signedPoints(weak.confidenceInterval[0])} to {signedPoints(weak.confidenceInterval[1])}. Because it crosses zero and lift is below 10 points, Kept collects more evidence instead of scaling.</p></div>}</section>
       <section><div className="drawer-section-title"><span>Approvals</span><b>{state.approvals.length} receipts</b></div>{state.approvals.length?<div className="approval-list">{state.approvals.slice(-2).map(item=><div key={item.id}><BadgeCheck size={16}/><span><b>{item.type} approved</b><small>{item.actorId} · v{item.approvedVersion}</small></span><code>{item.receiptDigest.slice(0,10)}</code></div>)}</div>:<p className="empty-note">No approval has been requested yet.</p>}</section>
       <section className="audit-section"><div className="drawer-section-title"><span>Audit trail</span><b>{state.audit.length} events</b></div><div className="audit-stream">{state.audit.slice(-10).reverse().map(event=><AuditRow key={event.id} event={event}/>)}</div></section>
       <footer><LockKeyhole size={14}/><span>Hash {state.audit.at(-1)?.hash.slice(0,16)??state.dataset.manifestHash.slice(0,16)}</span><b>Version {state.version}</b></footer>

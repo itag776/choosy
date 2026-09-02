@@ -9,7 +9,8 @@
     "start": "next start",
     "lint": "eslint .",
     "eval": "vitest run tests/eval.test.ts",
-    "test": "vitest run",
+    "eval:agent": "vitest run tests/agent-eval.test.ts",
+    "test": "vitest run --exclude tests/agent-eval.test.ts",
     "test:watch": "vitest"
   },
   "dependencies": {

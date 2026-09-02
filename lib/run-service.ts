@@ -3,8 +3,8 @@ import { createAuditEvent, createInitialRun, DEFAULT_RUN_ID, publicSnapshot } fr
 import { detectIncident } from "@/lib/detector";
 import { loadReplayFixture } from "@/lib/fixtures";
 import { eligibleCases, evaluatePlaybooks } from "@/lib/policy";
-import { createOrReconcilePaymentLink, fetchPaymentLink, paymentLinkIntent } from "@/lib/razorpay";
-import { evaluatePromotion, investigateIncident } from "@/lib/recovery-agent";
+import { createOrReconcilePaymentLink, fetchPaymentLink, paymentLinkIntent, sendPaymentLinkEmail } from "@/lib/razorpay";
+import { AgentDecisionUnavailableError, agentInputDigest, evaluatePromotion, investigateIncident } from "@/lib/recovery-agent";
 import { getRunRepository } from "@/lib/repository";
 import { createCanaryAssignments, evaluateCanary, executeReplayCampaign } from "@/lib/simulator";
 import type { ApprovalReceipt, AuditEvent, OperatorIdentity, RecoveryRunSnapshot, RunCommand, RunCommandRequest, RunPhase, StoredRecoveryRun } from "@/lib/types";
@@ -150,7 +150,7 @@ export async function executeRunCommand(runId: string, input: RunCommandRequest,
     }
 
     case "investigate": {
-      requirePhase(run, ["incident_detected"]);
+      requirePhase(run, ["incident_detected", "agent_failure"]);
       if (!run.incident) throw new RunServiceError("Incident evidence is missing.", 409);
       const incident = run.incident;
       run = await transition(run, "investigating", () => undefined, [{
@@ -159,24 +159,38 @@ export async function executeRunCommand(runId: string, input: RunCommandRequest,
         actor: "agent", status: "info",
       }]);
       const eligible = eligibleCases(run.payments, incident);
-      const investigation = await investigateIncident({ incident, eligible });
-      const policyDecision = evaluatePlaybooks(incident, investigation.playbooks, eligible);
+      const repository = getRunRepository();
+      const inputDigest = agentInputDigest({ incident, eligible });
+      const cached = await repository.findAgentDecisionCache?.(inputDigest) ?? null;
+      let investigation;
+      try {
+        investigation = await investigateIncident({ incident, eligible, cached });
+      } catch (error) {
+        if (!(error instanceof AgentDecisionUnavailableError)) throw error;
+        run = await transition(run, "agent_failure", (next) => { next.resumePhase = "incident_detected"; }, [{
+          kind: "guardrail", title: "Recovery decision stopped",
+          detail: `${error.message} No deterministic strategy was substituted; retry Gemini to continue.`,
+          actor: "system", status: "blocked",
+        }], receipt(input));
+        break;
+      }
+      const policyDecision = evaluatePlaybooks(incident, investigation.playbooks, eligible, investigation.rankedActions);
       await getRunRepository().saveAgentRun(run.id, "investigation", investigation);
       const toolEvents: EventInput[] = investigation.toolEvents.map((toolEvent) => ({
         kind: "tool", title: toolEvent.name, detail: toolEvent.summary, actor: "agent",
         status: toolEvent.status === "completed" ? "success" : "blocked",
         evidence: { callId: toolEvent.callId ?? null, mode: investigation.mode },
       }));
-      const nextPhase: RunPhase = policyDecision.outcome === "reject" ? "rejected" :
+      const nextPhase: RunPhase = investigation.decision === "hold" ? "stopped" : investigation.decision === "escalate" ? "escalated" : policyDecision.outcome === "reject" ? "rejected" :
         policyDecision.outcome === "require_approval" ? "awaiting_canary_approval" : "canary_approved";
       run = await transition(run, nextPhase, (next) => {
         next.investigation = investigation;
         next.policyDecision = policyDecision;
       }, [...toolEvents, {
-        kind: "agent", title: "Two bounded recovery strategies proposed",
+        kind: "agent", title: investigation.mode === "gemini_cache" ? "Validated Gemini decision reused" : "Gemini selected two of four actions",
         detail: investigation.primaryHypothesis,
-        actor: "agent", status: investigation.mode === "gemini_agent" ? "success" : "warning",
-        evidence: { model: investigation.model, responseId: investigation.responseId ?? null, semanticValidation: investigation.semanticValidation },
+        actor: "agent", status: "success",
+        evidence: { model: investigation.model, inputDigest: investigation.inputDigest, promptVersion: investigation.promptVersion, catalogVersion: investigation.catalogVersion, responseId: investigation.responseId ?? null, semanticValidation: investigation.semanticValidation, selectedActions: investigation.playbooks.map((action) => action.id) },
       }, {
         kind: "policy", title: policyDecision.outcome === "require_approval" ? "Human approval required" : "Policy decision recorded",
         detail: policyDecision.reasons.join(" ") || "Every deterministic rule passed.",
@@ -195,7 +209,7 @@ export async function executeRunCommand(runId: string, input: RunCommandRequest,
         if (approval) next.approvals.push(approval);
       }, [{
         kind: "approval", title: approve ? "Canary approved" : "Canary rejected",
-        detail: approve ? `${operator.actorId} approved a replay-only twelve-case experiment. No live payment action was initiated.` : `${operator.actorId} rejected the campaign before execution.`,
+        detail: approve ? `${operator.actorId} approved a replay-only 40 × 40 experiment. No live payment action was initiated.` : `${operator.actorId} rejected the campaign before execution.`,
         actor: "operator", status: approve ? "success" : "blocked",
         evidence: approval ? { approvalId: approval.id, receiptDigest: approval.receiptDigest, approvedVersion: approval.approvedVersion } : { actorId: operator.actorId },
       }], receipt(input));
@@ -205,11 +219,13 @@ export async function executeRunCommand(runId: string, input: RunCommandRequest,
     case "run_canary": {
       requirePhase(run, ["canary_approved"]);
       if (!run.incident) throw new RunServiceError("Incident evidence is missing.", 409);
+      if (!run.investigation || run.investigation.playbooks.length !== 2) throw new RunServiceError("Gemini did not select two test actions.", 409);
       const eligible = eligibleCases(run.payments, run.incident);
-      const assignments = createCanaryAssignments(eligible, run.dataset.seed, 12);
+      const actionIds = run.investigation.playbooks.map((action) => action.id) as [typeof run.investigation.playbooks[number]["id"], typeof run.investigation.playbooks[number]["id"]];
+      const assignments = createCanaryAssignments(eligible, actionIds, run.dataset.seed, 80);
       run = await transition(run, "canary_running", (next) => { next.canaryAssignments = assignments; }, [{
         kind: "canary", title: "Canary assignment persisted before outcome lookup",
-        detail: "Twelve eligible cases were randomized 6 × 6 before intervention outcomes were read.",
+        detail: "Eighty eligible cases were randomized 40 × 40 before causal replay outcomes were generated.",
         actor: "system", status: "info",
         evidence: { seed: run.dataset.seed, assignments },
       }]);
@@ -219,8 +235,8 @@ export async function executeRunCommand(runId: string, input: RunCommandRequest,
       const challenger = canary.results.find((result) => result.playbookId !== canary.winnerId)!;
       run = await transition(run, "canary_complete", (next) => { next.canary = canary; }, [{
         kind: "canary", title: "Canary measurement complete",
-        detail: `${winner.playbookId} recovered ${winner.recovered}/${winner.attempted} versus ${challenger.recovered}/${challenger.attempted}. This result is directional.`,
-        actor: "system", status: "success", evidence: { results: canary.results, seed: canary.seed },
+        detail: `${winner.playbookId} recovered ${winner.recovered}/${winner.attempted} versus ${challenger.recovered}/${challenger.attempted}; the 95% uplift interval is ${(canary.comparison.confidenceInterval[0] * 100).toFixed(1)} to ${(canary.comparison.confidenceInterval[1] * 100).toFixed(1)} points.`,
+        actor: "system", status: canary.comparison.gate === "pass" ? "success" : "warning", evidence: { results: canary.results, comparison: canary.comparison, seed: canary.seed },
       }], receipt(input));
       break;
     }
@@ -235,12 +251,12 @@ export async function executeRunCommand(runId: string, input: RunCommandRequest,
         actor: "agent", status: "info",
       }]);
       const promotion = await evaluatePromotion(canaryEvidence);
-      await getRunRepository().saveAgentRun(run.id, "promotion", promotion);
-      run = await transition(run, "awaiting_promotion_approval", (next) => { next.promotion = promotion; }, [{
+      const promotionPhase: RunPhase = promotion.recommendation === "promote" ? "awaiting_promotion_approval" : "stopped";
+      run = await transition(run, promotionPhase, (next) => { next.promotion = promotion; }, [{
         kind: "agent", title: promotion.recommendation === "promote" ? "Measured winner recommended for expansion" : "Expansion withheld",
         detail: promotion.reason, actor: "agent",
         status: promotion.recommendation === "promote" ? "success" : "warning",
-        evidence: { model: promotion.model, responseId: promotion.responseId ?? null, recommendation: promotion.recommendation },
+        evidence: { model: promotion.model, recommendation: promotion.recommendation, comparison: canaryEvidence.comparison },
       }, {
         kind: "policy", title: "Second human gate enforced",
         detail: "Canary evidence can inform a recommendation; only the operator can authorize expansion.",
@@ -277,7 +293,8 @@ export async function executeRunCommand(runId: string, input: RunCommandRequest,
         actor: "system", status: "info", evidence: { referenceId: action.referenceId, requestDigest: action.requestDigest },
       }]);
       try {
-        const external = await createOrReconcilePaymentLink(action);
+        let external = await createOrReconcilePaymentLink(action);
+        if (external.providerId && external.status !== "paid") external = await sendPaymentLinkEmail(external);
         await getRunRepository().saveExternalAction(run.id, external);
         if (external.status === "preview") {
           run = await transition(run, "integration_failure", (next) => {
@@ -291,14 +308,14 @@ export async function executeRunCommand(runId: string, input: RunCommandRequest,
         } else {
           const phase = external.status === "paid" ? "test_payment_captured" : "payment_link_created";
           run = await transition(run, phase, (next) => {
-            next.externalAction = external;
+            next.externalAction = external.status === "paid" ? { ...external, notificationStatus: "stopped" } : external;
             if (external.status === "paid" && next.ledger.testModeCases === 0) {
               next.ledger.razorpayTestAmountPaise = external.amountPaise;
               next.ledger.testModeCases = 1;
             }
           }, [{
-            kind: "razorpay", title: external.status === "paid" ? "Existing Test Mode recovery reconciled" : "Razorpay Test Mode link created",
-            detail: external.status === "paid" ? "The stable reference ID resolved to an already-paid Test Mode link." : "The provider returned a real Test Mode URL. Synthetic totals remain separate.",
+            kind: "razorpay", title: external.status === "paid" ? "Existing Test Mode recovery reconciled" : "Razorpay accepted the email notification",
+            detail: external.status === "paid" ? "The stable reference ID resolved to an already-paid Test Mode link." : `The provider accepted one Test Mode email for ${external.maskedRecipient ?? "the configured recipient"}. This records acceptance, not inbox delivery.`,
             actor: "razorpay", status: "success", evidence: { providerId: external.providerId, referenceId: external.referenceId },
           }], receipt(input));
         }
@@ -326,6 +343,7 @@ export async function executeRunCommand(runId: string, input: RunCommandRequest,
         if (!next.externalAction) return;
         next.externalAction.providerStatus = remote.status;
         next.externalAction.status = paid ? "paid" : "created";
+        if (paid) next.externalAction.notificationStatus = "stopped";
         next.externalAction.updatedAt = new Date().toISOString();
         if (paid && next.ledger.testModeCases === 0) {
           next.ledger.razorpayTestAmountPaise = next.externalAction.amountPaise;
@@ -407,7 +425,7 @@ export async function processRazorpayWebhook(input: {
     if (rawAmount !== undefined && Number.isFinite(amountPaise) && amountPaise === tracked.amountPaise) {
       ignored = false;
       next.phase = "test_payment_captured";
-      next.externalAction = { ...tracked, status: "paid", providerStatus: "paid", updatedAt: new Date().toISOString() };
+        next.externalAction = { ...tracked, status: "paid", providerStatus: "paid", notificationStatus: "stopped", updatedAt: new Date().toISOString() };
       if (next.ledger.testModeCases === 0) {
         next.ledger.razorpayTestAmountPaise = amountPaise;
         next.ledger.testModeCases = 1;

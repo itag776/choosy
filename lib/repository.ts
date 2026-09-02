@@ -22,12 +22,14 @@ export interface RunRepository {
   get(runId: string): Promise<StoredRecoveryRun>;
   replace(current: StoredRecoveryRun, next: StoredRecoveryRun, events: AuditEvent[]): Promise<StoredRecoveryRun>;
   saveAgentRun(runId: string, purpose: "investigation" | "promotion", result: InvestigationResult | PromotionRecommendation): Promise<void>;
+  findAgentDecisionCache?(inputDigest: string): Promise<InvestigationResult | null>;
   saveExternalAction(runId: string, action: ExternalAction): Promise<void>;
   applyWebhook(current: StoredRecoveryRun, next: StoredRecoveryRun, eventId: string, eventType: string, payloadDigest: string, auditEvent: AuditEvent): Promise<WebhookTransitionResult>;
 }
 
 const localDirectory = join(tmpdir(), "recoveros-canary-commander", "runs");
 let localQueue: Promise<void> = Promise.resolve();
+const localAgentCache = new Map<string, InvestigationResult>();
 
 function localPath(runId: string): string {
   if (!/^run_(?:[a-f0-9]{24}|canary_commander)$/.test(runId)) throw Object.assign(new Error("Invalid recovery run identifier."), { status: 422 });
@@ -61,7 +63,7 @@ class LocalFileRepository implements RunRepository {
     const run = await readLocal(runId);
     run.integration = {
       gemini: Boolean(process.env.GEMINI_API_KEY),
-      razorpay: Boolean(process.env.RAZORPAY_KEY_ID && process.env.RAZORPAY_KEY_SECRET),
+      razorpay: Boolean(process.env.RAZORPAY_KEY_ID && process.env.RAZORPAY_KEY_SECRET && process.env.RECOVERY_TEST_EMAIL),
       webhookSecret: Boolean(process.env.RAZORPAY_WEBHOOK_SECRET),
       persistence: "local_file",
     };
@@ -81,7 +83,12 @@ class LocalFileRepository implements RunRepository {
     return saved;
   }
 
-  async saveAgentRun(): Promise<void> {}
+  async saveAgentRun(_runId: string, purpose: "investigation" | "promotion", result: InvestigationResult | PromotionRecommendation): Promise<void> {
+    if (purpose === "investigation" && "inputDigest" in result && result.mode === "gemini_agent") localAgentCache.set(result.inputDigest, structuredClone(result));
+  }
+  async findAgentDecisionCache(inputDigest: string): Promise<InvestigationResult | null> {
+    return structuredClone(localAgentCache.get(inputDigest) ?? null);
+  }
   async saveExternalAction(): Promise<void> {}
 
   async applyWebhook(current: StoredRecoveryRun, next: StoredRecoveryRun, eventId: string): Promise<WebhookTransitionResult> {
@@ -121,7 +128,7 @@ class SupabaseRunRepository implements RunRepository {
     }
     const run = data.snapshot as StoredRecoveryRun;
     if (!verifyAuditChain(run.audit)) throw new Error("Recovery audit hash chain verification failed.");
-    run.integration = { gemini: Boolean(process.env.GEMINI_API_KEY), razorpay: Boolean(process.env.RAZORPAY_KEY_ID && process.env.RAZORPAY_KEY_SECRET), webhookSecret: Boolean(process.env.RAZORPAY_WEBHOOK_SECRET), persistence: "supabase" };
+    run.integration = { gemini: Boolean(process.env.GEMINI_API_KEY), razorpay: Boolean(process.env.RAZORPAY_KEY_ID && process.env.RAZORPAY_KEY_SECRET && process.env.RECOVERY_TEST_EMAIL), webhookSecret: Boolean(process.env.RAZORPAY_WEBHOOK_SECRET), persistence: "supabase" };
     return run;
   }
 
@@ -148,9 +155,18 @@ class SupabaseRunRepository implements RunRepository {
   async saveAgentRun(runId: string, purpose: "investigation" | "promotion", result: InvestigationResult | PromotionRecommendation): Promise<void> {
     const { error } = await this.client.from("agent_runs").insert({
       run_id: runId, purpose, model: result.model, mode: result.mode, status: "completed",
-      response_id: result.responseId ?? null, tool_events: result.toolEvents, output: result,
+      response_id: result.responseId ?? null, input_digest: "inputDigest" in result ? result.inputDigest : null,
+      prompt_version: "promptVersion" in result ? result.promptVersion : null,
+      catalog_version: "catalogVersion" in result ? result.catalogVersion : null,
+      tool_events: result.toolEvents, output: result,
     });
     if (error) throw new Error(`Supabase agent audit failed: ${error.message}`);
+  }
+
+  async findAgentDecisionCache(inputDigest: string): Promise<InvestigationResult | null> {
+    const { data, error } = await this.client.from("agent_runs").select("output").eq("purpose", "investigation").eq("mode", "gemini_agent").eq("status", "completed").eq("input_digest", inputDigest).order("created_at", { ascending: false }).limit(1).maybeSingle();
+    if (error) throw new Error(`Supabase agent cache read failed: ${error.message}`);
+    return data?.output as InvestigationResult | null;
   }
 
   async saveExternalAction(runId: string, action: ExternalAction): Promise<void> {
@@ -158,6 +174,8 @@ class SupabaseRunRepository implements RunRepository {
       id: action.id, run_id: runId, type: action.type, idempotency_key: action.idempotencyKey,
       reference_id: action.referenceId, provider_id: action.providerId ?? null, status: action.status,
       amount_paise: action.amountPaise, request_digest: action.requestDigest, response: action,
+      notification_medium: action.notificationMedium, notification_status: action.notificationStatus,
+      masked_recipient: action.maskedRecipient ?? null, notification_accepted_at: action.notificationAcceptedAt ?? null,
       updated_at: action.updatedAt,
     });
     if (error) throw new Error(`Supabase external action audit failed: ${error.message}`);

@@ -4,9 +4,10 @@ import { detectIncident } from "@/lib/detector";
 import { loadReplayFixture } from "@/lib/fixtures";
 import { presentationFor } from "@/lib/presentation";
 import { eligibleCases, evaluatePlaybooks } from "@/lib/policy";
-import { fallbackInvestigation, fallbackPromotion } from "@/lib/recovery-agent";
+import { fallbackPromotion } from "@/lib/recovery-agent";
 import { createCanaryAssignments, evaluateCanary } from "@/lib/simulator";
 import type { ApprovalReceipt, RunPhase, StoredRecoveryRun } from "@/lib/types";
+import { testInvestigation } from "@/tests/helpers";
 
 function approval(type: ApprovalReceipt["type"], index: number): ApprovalReceipt {
   return {
@@ -29,13 +30,13 @@ function richState(): StoredRecoveryRun {
   const fixture = loadReplayFixture();
   const incident = detectIncident(fixture.payments)!;
   const eligible = eligibleCases(fixture.payments, incident);
-  const investigation = fallbackInvestigation(incident, eligible.length);
-  const assignments = createCanaryAssignments(eligible, fixture.manifest.seed);
+  const investigation = testInvestigation(incident, eligible);
+  const assignments = createCanaryAssignments(eligible, ["timed_retry", "multi_rail_link"], fixture.manifest.seed);
   const canary = evaluateCanary(assignments, fixture.payments, fixture.outcomes, fixture.manifest.seed);
 
   state.incident = incident;
   state.investigation = investigation;
-  state.policyDecision = evaluatePlaybooks(incident, investigation.playbooks, eligible);
+  state.policyDecision = evaluatePlaybooks(incident, investigation.playbooks, eligible, investigation.rankedActions);
   state.canaryAssignments = assignments;
   state.canary = canary;
   state.promotion = fallbackPromotion(canary);
@@ -60,6 +61,9 @@ function richState(): StoredRecoveryRun {
     status: "paid",
     providerId: "plink_presentation",
     providerStatus: "paid",
+    notificationMedium: "email",
+    notificationStatus: "stopped",
+    maskedRecipient: "ju••••@example.com",
     requestDigest: "d".repeat(64),
     createdAt: state.createdAt,
     updatedAt: state.updatedAt,
@@ -70,7 +74,7 @@ function richState(): StoredRecoveryRun {
 describe("phase presentation", () => {
   it("provides concrete copy and three explanation steps for every phase", () => {
     const phases: RunPhase[] = [
-      "idle", "incident_streaming", "incident_detected", "investigating",
+      "idle", "incident_streaming", "incident_detected", "investigating", "agent_failure",
       "awaiting_canary_approval", "canary_approved", "canary_running",
       "canary_complete", "evaluating_promotion", "awaiting_promotion_approval",
       "promoted", "payment_link_creating", "payment_link_created",
@@ -100,13 +104,14 @@ describe("phase presentation", () => {
     expect(presentationFor(state).body).toContain("120 affected attempts");
 
     state.phase = "awaiting_promotion_approval";
-    expect(presentationFor(state).title).toBe("Alternate payment link recovered 5 of 6.");
-    expect(presentationFor(state).body).toContain("Timed retry recovered 2 of 6");
+    expect(presentationFor(state).title).toContain("recovered");
+    expect(presentationFor(state).title).toContain("of 40");
+    expect(presentationFor(state).body).toContain("of 40");
 
     state.phase = "canary_complete";
-    expect(presentationFor(state).explanation.title).toBe("How the 12-case test stays honest");
+    expect(presentationFor(state).explanation.title).toBe("How the 80-case test stays honest");
     state.phase = "evaluating_promotion";
-    expect(presentationFor(state).explanation.title).toBe("How Kept turns a test into a bounded decision");
+    expect(presentationFor(state).explanation.title).toBe("How measured evidence becomes a recovery decision");
   });
 
   it("does not claim a signed webhook or duplicate block before the audit proves them", () => {

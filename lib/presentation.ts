@@ -28,6 +28,7 @@ const labels: Record<RunPhase, string> = {
   incident_streaming: "Watching payments",
   incident_detected: "Incident detected",
   investigating: "Checking the cause",
+  agent_failure: "AI decision unavailable",
   awaiting_canary_approval: "Options ready",
   canary_approved: "Test approved",
   canary_running: "Test running",
@@ -62,9 +63,7 @@ function step(label: string, detail: string, value: string, status: ExplainerSta
 }
 
 function playbookName(state: RecoveryRunSnapshot, id: string | undefined): string {
-  if (id === "alternate_link") return "Alternate payment link";
-  if (id === "wait_retry") return "Timed retry";
-  return state.investigation?.playbooks.find((playbook) => playbook.id === id)?.name ?? "Recovery option";
+  return state.investigation?.rankedActions.find((playbook) => playbook.id === id)?.name ?? id?.replaceAll("_", " ") ?? "Recovery option";
 }
 
 function hasAudit(state: RecoveryRunSnapshot, pattern: RegExp): boolean {
@@ -110,11 +109,11 @@ function detectExplanation(state: RecoveryRunSnapshot): PhasePresentation["expla
 function understandExplanation(state: RecoveryRunSnapshot): PhasePresentation["explanation"] {
   const finished = Boolean(state.investigation);
   const policyReady = Boolean(state.policyDecision);
-  const mode = state.integration.gemini ? "Gemini + typed tools" : "Deterministic fallback";
+  const mode = state.investigation?.mode === "gemini_cache" ? "Validated Gemini cache" : "Live Gemini + typed tools";
 
   return {
-    title: "How Kept finds a safe recovery option",
-    summary: "Kept starts from deterministic incident evidence, challenges the likely cause, and sends every proposed action through merchant policy.",
+    title: "How Gemini chooses the recovery test",
+    summary: "Gemini reads the evidence, ranks all four bounded actions, chooses the two worth testing, and explains why the others do not fit.",
     boundary: "The model can recommend an option. It cannot approve a test or move money.",
     steps: [
       step(
@@ -132,8 +131,8 @@ function understandExplanation(state: RecoveryRunSnapshot): PhasePresentation["e
         finished ? "complete" : "current",
       ),
       step(
-        "Apply merchant policy",
-        "Preserve the amount, respect consent and contact limits, and require approval.",
+        "Validate—not choose",
+        "Deterministic policy checks the model's choice without substituting its own strategy.",
         policyReady ? `${state.policyDecision!.checkedRules.length} rules checked` : "Waiting",
         policyReady ? "complete" : "waiting",
       ),
@@ -160,14 +159,14 @@ function testExplanation(state: RecoveryRunSnapshot): PhasePresentation["explana
   const result = state.canary?.results.map((item) => `${item.recovered}/${item.attempted}`).join(" vs ") ?? "Waiting";
 
   return {
-    title: "How the 12-case test stays honest",
-    summary: "Both recovery options receive comparable replay cases, and assignments are fixed before outcomes are read.",
-    boundary: "Only the 12 committed replay cases can run. Live customer payments remain untouched.",
+    title: "How the 80-case test stays honest",
+    summary: "Both Gemini-selected actions receive 40 comparable cases, and assignments are fixed before causal outcomes are generated.",
+    boundary: "Only the 80 committed replay cases can run. Live customer payments remain untouched.",
     steps: [
       step(
         "Commit the split",
         "Seeded assignment prevents choosing favorable cases after the fact.",
-        committed ? `${state.canaryAssignments.length} cases · 6 + 6` : "12 cases · 6 + 6",
+        committed ? `${state.canaryAssignments.length} cases · 40 + 40` : "80 cases · 40 + 40",
         committed ? "complete" : "current",
       ),
       step(
@@ -178,7 +177,7 @@ function testExplanation(state: RecoveryRunSnapshot): PhasePresentation["explana
       ),
       step(
         "Compare recovery",
-        "Measure recovered cases, recovered amount, conversion, and contacts.",
+        "Measure recovery, value, absolute lift, and a 95% uncertainty interval.",
         result,
         measured ? "complete" : "waiting",
       ),
@@ -193,20 +192,20 @@ function decideExplanation(state: RecoveryRunSnapshot): PhasePresentation["expla
   const approved = state.approvals.some((approval) => approval.type === "promotion");
 
   return {
-    title: "How Kept turns a test into a bounded decision",
-    summary: "Kept reads the committed canary result, checks stopping conditions, and asks an authenticated operator before expanding the winner.",
+    title: "How measured evidence becomes a recovery decision",
+    summary: "A pre-registered statistical gate checks sample size, recovered value, material lift, and the 95% interval before approval is possible.",
     boundary: "A measured winner cannot scale until an authenticated operator approves it.",
     steps: [
       step(
         "Read the measured winner",
         winner ? `${playbookName(state, winner.playbookId)} recovered ${winner.recovered} of ${winner.attempted}.` : "Wait for the canary to finish.",
-        canary ? `${canary.liftMultiple.toFixed(1)}× lift` : "Waiting",
+        canary ? `+${Math.round(canary.comparison.absoluteLift * 100)} points` : "Waiting",
         canary ? "complete" : "waiting",
       ),
       step(
         "Check stopping conditions",
-        "Do not promote incomplete evidence, policy violations, or an unsafe result.",
-        recommendationReady ? `${state.promotion!.stoppingConditions.length} conditions` : "Checking",
+        "Withhold expansion unless 40 × 40, value, 10-point lift, and the 95% interval all pass.",
+        recommendationReady ? (state.promotion!.recommendation === "promote" ? "Gate passed" : "Withheld") : "Checking",
         recommendationReady ? "complete" : "current",
       ),
       step(
@@ -222,13 +221,13 @@ function decideExplanation(state: RecoveryRunSnapshot): PhasePresentation["expla
 function proveExplanation(state: RecoveryRunSnapshot): PhasePresentation["explanation"] {
   const intentPersisted = Boolean(state.externalAction);
   const providerCreated = Boolean(state.externalAction?.providerId);
-  const captured = state.ledger.testModeCases > 0;
+  const notificationAccepted = state.externalAction?.notificationStatus === "accepted" || state.externalAction?.notificationStatus === "stopped";
   const signedWebhook = hasAudit(state, /HMAC-verified|signed webhook/i);
   const duplicateBlocked = state.phase === "completed" || hasAudit(state, /Duplicate webhook ignored|Idempotency proof complete/i);
 
   return {
     title: "How Kept proves the provider boundary",
-    summary: "Synthetic batch recovery and Razorpay Test Mode money stay in separate ledgers. Provider money counts only after the tracked payment is confirmed.",
+    summary: "Kept creates one owned Test Mode link, asks Razorpay to email it, waits for capture, and stops further contact. Synthetic and provider money stay separate.",
     boundary: duplicateBlocked
       ? "A repeated webhook cannot add money or trigger another customer contact."
       : "Kept cannot count provider money without a matching paid Razorpay artifact.",
@@ -240,10 +239,10 @@ function proveExplanation(state: RecoveryRunSnapshot): PhasePresentation["explan
         intentPersisted ? "complete" : "current",
       ),
       step(
-        "Confirm Razorpay Test Mode",
-        providerCreated ? `Track ${state.externalAction!.providerId} without mixing it into replay recovery.` : "Create or reconcile one provider Payment Link by reference.",
-        captured ? `${formatInr(state.ledger.razorpayTestAmountPaise)} captured` : providerCreated ? "Link created" : "Waiting",
-        captured ? "complete" : providerCreated ? "current" : "waiting",
+        "Send through Razorpay",
+        notificationAccepted ? `Razorpay accepted one email for ${state.externalAction!.maskedRecipient ?? "the configured recipient"}; this does not claim inbox delivery.` : "Create the link, then call Razorpay's email notification endpoint.",
+        notificationAccepted ? "Email accepted" : providerCreated ? "Link created" : "Waiting",
+        notificationAccepted ? "complete" : providerCreated ? "current" : "waiting",
       ),
       step(
         "Verify the event boundary",
@@ -292,11 +291,19 @@ export function presentationFor(state: RecoveryRunSnapshot): PhasePresentation {
         body: "Kept checks the incident, merchant policy, eligible cases, available actions, and competing explanations.",
         explanation: understandExplanation(state),
       };
+    case "agent_failure":
+      return {
+        ...base,
+        tone: "red",
+        title: "Gemini did not make a decision.",
+        body: "Kept stopped instead of substituting a rules-based recovery choice. Retry Gemini to continue.",
+        explanation: understandExplanation(state),
+      };
     case "awaiting_canary_approval":
       return {
         ...base,
-        title: "Two recovery options passed policy.",
-        body: "Both preserve the amount and contact limits. You decide whether to run a bounded 12-case test.",
+        title: "Gemini selected 2 of 4 actions.",
+        body: "The chosen actions passed deterministic bounds. You decide whether to commit the 40 × 40 test.",
         explanation: understandExplanation(state),
       };
     case "rejected":
@@ -310,15 +317,15 @@ export function presentationFor(state: RecoveryRunSnapshot): PhasePresentation {
     case "canary_approved":
       return {
         ...base,
-        title: "Testing 12 cases before scaling.",
-        body: "Six receive a timed retry and six receive an alternate link. Assignments are fixed before outcomes are read.",
+        title: "Testing 80 cases before scaling.",
+        body: "Each selected action receives 40 cases. Assignments are fixed before causal outcomes are generated.",
         explanation: testExplanation(state),
       };
     case "canary_running":
       return {
         ...base,
-        title: "Testing 12 cases before scaling.",
-        body: "The committed 6 × 6 replay is running. Live customer payments remain untouched.",
+        title: "Testing 80 cases before scaling.",
+        body: "The committed 40 × 40 replay is running. Live customer payments remain untouched.",
         explanation: testExplanation(state),
       };
     case "canary_complete": {
@@ -326,7 +333,7 @@ export function presentationFor(state: RecoveryRunSnapshot): PhasePresentation {
       const loser = state.canary?.results.find((item) => item.playbookId !== state.canary?.winnerId);
       return {
         ...base,
-        title: winner ? `${playbookName(state, winner.playbookId)} recovered ${winner.recovered} of ${winner.attempted}.` : "The 12-case test is complete.",
+        title: winner ? `${playbookName(state, winner.playbookId)} recovered ${winner.recovered} of ${winner.attempted}.` : "The 80-case test is complete.",
         body: winner && loser
           ? `${playbookName(state, loser.playbookId)} recovered ${loser.recovered} of ${loser.attempted}. Review the comparison before deciding.`
           : "Both recovery options were measured on their committed cases.",
@@ -363,8 +370,8 @@ export function presentationFor(state: RecoveryRunSnapshot): PhasePresentation {
     case "payment_link_created":
       return {
         ...base,
-        title: "₹400 test payment ready.",
-        body: "Complete the Razorpay Test Mode payment, then return here to confirm its state.",
+        title: "Razorpay accepted the recovery email.",
+        body: "Open the owned Test Mode link, complete ₹400, then return here to confirm the signed provider event.",
         explanation: proveExplanation(state),
       };
     case "integration_failure":

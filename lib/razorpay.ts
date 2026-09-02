@@ -32,7 +32,8 @@ export function paymentLinkIntent(runId: string, caseId: string, amountPaise: nu
   return {
     id: `ext_${referenceId}`, runId, type: "razorpay_payment_link", idempotencyKey: `payment_link:${referenceId}`,
     referenceId, caseId, amountPaise, status: "intent_recorded",
-    requestDigest: createHash("sha256").update(JSON.stringify({ referenceId, caseId, amountPaise, methods: ["upi", "netbanking"] })).digest("hex"),
+    notificationMedium: "email", notificationStatus: "pending",
+    requestDigest: createHash("sha256").update(JSON.stringify({ referenceId, caseId, amountPaise, methods: ["upi", "netbanking"], notification: "email" })).digest("hex"),
     createdAt: now.toISOString(), updatedAt: now.toISOString(),
   };
 }
@@ -57,6 +58,10 @@ export async function createOrReconcilePaymentLink(action: ExternalAction): Prom
   if (!process.env.RAZORPAY_KEY_ID || !process.env.RAZORPAY_KEY_SECRET) {
     return { ...action, status: "preview", failureReason: "Razorpay Test Mode keys are not configured; no external URL was fabricated.", updatedAt: new Date().toISOString() };
   }
+  const recoveryEmail = process.env.RECOVERY_TEST_EMAIL?.trim();
+  if (!recoveryEmail || !recoveryEmail.includes("@")) {
+    return { ...action, status: "preview", notificationStatus: "failed", failureReason: "RECOVERY_TEST_EMAIL is not configured; no customer notification was attempted.", updatedAt: new Date().toISOString() };
+  }
 
   const existing = await findPaymentLinkByReference(action.referenceId);
   if (existing) return mergeProvider(action, existing);
@@ -69,6 +74,7 @@ export async function createOrReconcilePaymentLink(action: ExternalAction): Prom
         amount: action.amountPaise, currency: "INR", reference_id: action.referenceId,
         description: "Kept approved Test Mode recovery",
         expire_by: Math.floor(Date.now() / 1000) + 3_600, reminder_enable: false,
+        customer: { email: recoveryEmail }, notify: { email: false, sms: false },
         notes: {
           recoveros_run_id: action.runId,
           recoveros_case_id: action.caseId,
@@ -89,6 +95,27 @@ export async function createOrReconcilePaymentLink(action: ExternalAction): Prom
     if (reconciled) return mergeProvider(action, reconciled);
     throw error;
   }
+}
+
+export function maskEmail(value: string): string {
+  const [name, domain] = value.split("@");
+  if (!name || !domain) return "configured recipient";
+  return `${name.slice(0, 2)}${"•".repeat(Math.max(2, Math.min(6, name.length - 2)))}@${domain}`;
+}
+
+export async function sendPaymentLinkEmail(action: ExternalAction): Promise<ExternalAction> {
+  if (action.status === "paid" || action.notificationStatus === "stopped") throw new Error("Customer contact is stopped after payment capture.");
+  if (action.notificationStatus === "accepted") return action;
+  if (!action.providerId) throw new Error("A Razorpay Payment Link must exist before notification.");
+  const recoveryEmail = process.env.RECOVERY_TEST_EMAIL?.trim();
+  if (!recoveryEmail) throw new Error("RECOVERY_TEST_EMAIL is not configured.");
+  const response = await fetch(`https://api.razorpay.com/v1/payment_links/${encodeURIComponent(action.providerId)}/notify_by/email`, {
+    method: "POST", headers: { Authorization: authHeader() }, signal: AbortSignal.timeout(8_000),
+  });
+  if (!response.ok) throw new Error(`Razorpay email notification failed with status ${response.status}.`);
+  const payload = z.object({ success: z.literal(true) }).parse(await response.json());
+  const now = new Date().toISOString();
+  return { ...action, notificationStatus: payload.success ? "accepted" : "failed", maskedRecipient: maskEmail(recoveryEmail), notificationAcceptedAt: now, updatedAt: now };
 }
 
 export async function fetchPaymentLink(id: string): Promise<RazorpayPaymentLinkResponse> {

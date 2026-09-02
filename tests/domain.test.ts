@@ -5,15 +5,16 @@ import { createInitialRun, DEFAULT_RUN_ID, verifyAuditChain } from "@/lib/demo-d
 import { detectIncident } from "@/lib/detector";
 import { loadReplayFixture } from "@/lib/fixtures";
 import { eligibleCases, evaluatePlaybooks } from "@/lib/policy";
-import { fallbackInvestigation, fallbackPromotion, isDirectionallyPromotable } from "@/lib/recovery-agent";
+import { fallbackPromotion, isDirectionallyPromotable, validCachedInvestigation } from "@/lib/recovery-agent";
 import { RepositoryConflictError, setRunRepositoryForTests, type RunRepository } from "@/lib/repository";
-import { parsePaymentLinkList } from "@/lib/razorpay";
+import { maskEmail, parsePaymentLinkList, sendPaymentLinkEmail } from "@/lib/razorpay";
 import { executeRunCommand, getRun, processRazorpayWebhook } from "@/lib/run-service";
 import { createCanaryAssignments, evaluateCanary } from "@/lib/simulator";
 import { hasSupabaseConfig } from "@/lib/supabase";
-import type { RunCommand, StoredRecoveryRun } from "@/lib/types";
+import type { InvestigationResult, RunCommand, StoredRecoveryRun } from "@/lib/types";
 import { verifyRazorpaySignature } from "@/lib/webhook";
 import { createOperatorToken, verifyAccessCode, verifyOperatorToken } from "@/lib/operator-auth";
+import { testInvestigation } from "@/tests/helpers";
 
 class MemoryRepository implements RunRepository {
   run = createInitialRun(new Date("2026-08-20T12:00:00.000Z"));
@@ -26,6 +27,12 @@ class MemoryRepository implements RunRepository {
     return structuredClone(this.run);
   }
   async saveAgentRun(): Promise<void> {}
+  async findAgentDecisionCache(inputDigest: string): Promise<InvestigationResult | null> {
+    if (!this.run.incident) return null;
+    const eligible = eligibleCases(this.run.payments, this.run.incident);
+    const cached = testInvestigation(this.run.incident, eligible);
+    return cached.inputDigest === inputDigest ? cached : null;
+  }
   async saveExternalAction(): Promise<void> {}
   async applyWebhook(current: StoredRecoveryRun, next: StoredRecoveryRun, eventId: string) {
     if (this.webhookIds.has(eventId)) return { duplicate: true, run: structuredClone(this.run) };
@@ -70,14 +77,14 @@ describe("verified replay truth", () => {
     const fixture = loadReplayFixture();
     const incident = detectIncident(fixture.payments)!;
     const eligible = eligibleCases(fixture.payments, incident);
-    const first = createCanaryAssignments(eligible, fixture.manifest.seed);
-    const second = createCanaryAssignments(eligible, fixture.manifest.seed);
+    const first = createCanaryAssignments(eligible, ["timed_retry", "multi_rail_link"], fixture.manifest.seed);
+    const second = createCanaryAssignments(eligible, ["timed_retry", "multi_rail_link"], fixture.manifest.seed);
     expect(first).toEqual(second);
     expect(first.every((assignment) => assignment.committed)).toBe(true);
     const result = evaluateCanary(first, fixture.payments, fixture.outcomes, fixture.manifest.seed);
-    expect(result.results.find((item) => item.playbookId === "wait_retry")?.recovered).toBe(2);
-    expect(result.results.find((item) => item.playbookId === "alternate_link")?.recovered).toBe(5);
-    expect(result.liftMultiple).toBe(2.5);
+    expect(result.results.every((item) => item.attempted === 40)).toBe(true);
+    expect(result.results.find((item) => item.playbookId === "multi_rail_link")!.recovered).toBeGreaterThan(result.results.find((item) => item.playbookId === "timed_retry")!.recovered);
+    expect(result.comparison.confidenceInterval[0]).toBeGreaterThan(0);
     expect(isDirectionallyPromotable(result)).toBe(true);
     expect(fallbackPromotion(result).recommendation).toBe("promote");
   });
@@ -86,7 +93,8 @@ describe("verified replay truth", () => {
     const fixture = loadReplayFixture();
     const incident = detectIncident(fixture.payments)!;
     const eligible = eligibleCases(fixture.payments, incident);
-    const assignments = createCanaryAssignments(eligible, fixture.manifest.seed).slice(0, 10);
+    const complete = createCanaryAssignments(eligible, ["timed_retry", "multi_rail_link"], fixture.manifest.seed);
+    const assignments = [...complete.slice(0, 39), ...complete.slice(40, 79)];
     const incomplete = evaluateCanary(assignments, fixture.payments, fixture.outcomes, fixture.manifest.seed);
     expect(isDirectionallyPromotable(incomplete)).toBe(false);
     expect(fallbackPromotion(incomplete).recommendation).toBe("extend_canary");
@@ -154,9 +162,11 @@ describe("policy boundary", () => {
     const fixture = loadReplayFixture();
     const incident = detectIncident(fixture.payments)!;
     const eligible = eligibleCases(fixture.payments, incident);
-    const fallback = fallbackInvestigation(incident, eligible.length);
-    expect(evaluatePlaybooks(incident, fallback.playbooks, eligible).outcome).toBe("require_approval");
-    expect(evaluatePlaybooks(incident, fallback.playbooks.slice(0, 1), eligible).outcome).toBe("reject");
+    const investigation = testInvestigation(incident, eligible);
+    expect(evaluatePlaybooks(incident, investigation.playbooks, eligible, investigation.rankedActions).outcome).toBe("require_approval");
+    expect(evaluatePlaybooks(incident, investigation.playbooks.slice(0, 1), eligible, investigation.rankedActions).outcome).toBe("reject");
+    expect(validCachedInvestigation(investigation, investigation.inputDigest)).toBe(true);
+    expect(validCachedInvestigation(investigation, "0".repeat(64))).toBe(false);
   });
 });
 
@@ -210,6 +220,7 @@ describe("Razorpay safety", () => {
     repository = new MemoryRepository();
     setRunRepositoryForTests(repository);
   });
+  afterEach(() => { vi.unstubAllEnvs(); vi.unstubAllGlobals(); });
 
   it("validates signatures against the untouched raw body", () => {
     const body = JSON.stringify({ event: "payment.captured" });
@@ -227,6 +238,25 @@ describe("Razorpay safety", () => {
     expect(links[0]?.reference_id).toBe("rcv_test");
   });
 
+  it("records provider acceptance with only a masked email and blocks contact after capture", async () => {
+    vi.stubEnv("RAZORPAY_KEY_ID", "rzp_test_key");
+    vi.stubEnv("RAZORPAY_KEY_SECRET", "secret");
+    vi.stubEnv("RECOVERY_TEST_EMAIL", "judge@example.com");
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ success: true }), { status: 200, headers: { "Content-Type": "application/json" } })));
+    const run = repository.run;
+    const action = {
+      id: "ext_notify", runId: run.id, type: "razorpay_payment_link" as const, idempotencyKey: "plink:notify",
+      referenceId: "rcv_notify", caseId: "owned_notify", amountPaise: 40_000, status: "created" as const,
+      providerId: "plink_notify", notificationMedium: "email" as const, notificationStatus: "pending" as const,
+      requestDigest: "digest", createdAt: run.createdAt, updatedAt: run.updatedAt,
+    };
+    const notified = await sendPaymentLinkEmail(action);
+    expect(notified.notificationStatus).toBe("accepted");
+    expect(notified.maskedRecipient).toBe(maskEmail("judge@example.com"));
+    expect(JSON.stringify(notified)).not.toContain("judge@example.com");
+    await expect(sendPaymentLinkEmail({ ...notified, status: "paid", notificationStatus: "stopped" })).rejects.toThrow("stopped");
+  });
+
   it("captures once, suppresses duplicates, and ignores a late failure", async () => {
     const run = repository.run;
     run.phase = "payment_link_created";
@@ -234,6 +264,7 @@ describe("Razorpay safety", () => {
       id: "ext_test", runId: run.id, type: "razorpay_payment_link", idempotencyKey: "plink:test",
       referenceId: "rcv_test", caseId: "owned_test", amountPaise: 40_000,
       status: "created", providerId: "plink_test", shortUrl: "https://rzp.io/i/test",
+      notificationMedium: "email", notificationStatus: "accepted", maskedRecipient: "te••@example.com",
       requestDigest: "digest", createdAt: run.createdAt, updatedAt: run.updatedAt,
     };
     repository.run = run;
@@ -249,6 +280,7 @@ describe("Razorpay safety", () => {
     expect(first.duplicate).toBe(false);
     expect(first.state.phase).toBe("test_payment_captured");
     expect(first.state.ledger.razorpayTestAmountPaise).toBe(40_000);
+    expect(first.state.externalAction?.notificationStatus).toBe("stopped");
 
     const duplicate = await processRazorpayWebhook({ eventId: "evt_paid", eventType: "payment_link.paid", rawBody, payload, runId: run.id });
     expect(duplicate.duplicate).toBe(true);
@@ -270,6 +302,7 @@ describe("Razorpay safety", () => {
       id: "ext_test", runId: run.id, type: "razorpay_payment_link", idempotencyKey: "plink:test",
       referenceId: "rcv_test", caseId: "owned_test", amountPaise: 40_000,
       status: "created", providerId: "plink_owned", shortUrl: "https://rzp.io/i/test",
+      notificationMedium: "email", notificationStatus: "accepted", maskedRecipient: "te••@example.com",
       requestDigest: "digest", createdAt: run.createdAt, updatedAt: run.updatedAt,
     };
     repository.run = run;
