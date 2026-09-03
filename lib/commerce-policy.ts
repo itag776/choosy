@@ -1,8 +1,18 @@
 import { createHash, randomUUID } from "node:crypto";
 import { categoryProfile, CATALOG_VERSION } from "@/lib/catalog";
-import type { Cart, CartItem, PreferenceProfile, Product, ProductVariant, QuestionDefinition, Quote, Recommendation } from "@/lib/types";
+import type { Cart, CartItem, PreferenceProfile, Product, ProductCategory, ProductVariant, QuestionDefinition, Quote, Recommendation } from "@/lib/types";
 
 export interface NextQuestion extends QuestionDefinition { scope: "universal" | "category"; }
+
+export const GROWTH_POLICY = {
+  objective: "shopper_fit_then_basket_value",
+  promotionTieThreshold: 5,
+  maximumAddons: 2,
+  requiresExplicitConfirmation: true,
+  exactBudgetBoundary: true,
+} as const;
+
+export const QUOTE_TTL_MS = 10 * 60_000;
 
 export function emptyPreferenceProfile(): PreferenceProfile {
   return { category: null, maxBudgetPaise: null, useCase: null, brandPreference: null, mustHaves: [], answers: {}, confirmedKeys: [] };
@@ -10,15 +20,60 @@ export function emptyPreferenceProfile(): PreferenceProfile {
 
 const universalQuestions: NextQuestion[] = [
   { key: "category", prompt: "What are you shopping for?", choices: ["Phone", "Headphones", "Running shoes"], required: true, weight: 0, scope: "universal" },
-  { key: "maxBudgetPaise", prompt: "What is the most you want to spend?", choices: ["₹5,000", "₹10,000", "₹25,000", "₹50,000", "₹70,000"], required: true, weight: 20, scope: "universal" },
+  { key: "maxBudgetPaise", prompt: "What’s your maximum budget?", choices: ["₹5,000", "₹10,000", "₹25,000", "₹50,000", "₹70,000", "₹1,00,000"], required: true, weight: 20, scope: "universal" },
   { key: "useCase", prompt: "What will you use it for most?", choices: ["Everyday", "Work", "Travel", "Fitness", "Gaming", "Photography"], required: true, weight: 18, scope: "universal" },
-  { key: "brandPreference", prompt: "Any favourite brand, or should I stay open?", choices: ["No preference", "Aster", "Northstar", "Luma", "Orbit", "Pulse", "Serein", "Vela", "Ridge", "Kite"], required: true, weight: 10, scope: "universal" },
-  { key: "mustHaves", prompt: "Any absolute must-have or deal-breaker?", choices: ["No deal-breakers", "Long battery", "Noise cancellation", "Low latency", "Soft cushioning", "Compact"], required: true, weight: 20, scope: "universal" },
+  { key: "brandPreference", prompt: "Do you have a preferred brand?", choices: ["No preference", "iQOO", "OnePlus", "Nothing", "Google", "Apple", "JBL", "Sony", "KIPRUN", "Nike", "adidas"], required: true, weight: 10, scope: "universal" },
+  { key: "mustHaves", prompt: "Anything you definitely need—or want to avoid?", choices: ["No deal-breakers", "Long battery", "Noise cancellation", "Low latency", "Soft cushioning", "Compact"], required: true, weight: 20, scope: "universal" },
 ];
 
 export function allQuestions(profile: PreferenceProfile): NextQuestion[] {
   if (!profile.category) return universalQuestions;
   return [...universalQuestions, ...categoryProfile(profile.category).questions.map((question) => ({ ...question, scope: "category" as const }))];
+}
+
+const coveredAnswers: Partial<Record<ProductCategory, Record<string, Record<string, string>>>> = {
+  phones: {
+    priority: {
+      photography: "Camera",
+      camera: "Camera",
+      "long battery": "Battery",
+      battery: "Battery",
+    },
+    size: { compact: "Compact" },
+  },
+  headphones: {
+    environment: { gaming: "Gaming" },
+    feature: {
+      "noise cancellation": "Noise cancellation",
+      "low latency": "Low latency",
+      "call quality": "Call quality",
+    },
+  },
+  "running-shoes": {
+    cushioning: { "soft cushioning": "Soft" },
+  },
+};
+
+/**
+ * Records category answers that the shopper has already supplied through an
+ * equivalent universal preference. This keeps the completeness gate strict
+ * without asking the same thing twice in slightly different words.
+ */
+export function resolveCoveredQuestions(profile: PreferenceProfile): PreferenceProfile {
+  if (!profile.category) return profile;
+  const mappings = coveredAnswers[profile.category];
+  if (!mappings) return profile;
+
+  const next = structuredClone(profile);
+  const supplied = [profile.useCase, ...profile.mustHaves].filter((value): value is string => Boolean(value)).map(normalized);
+  for (const [key, aliases] of Object.entries(mappings)) {
+    if (next.confirmedKeys.includes(key)) continue;
+    const answer = supplied.map((value) => aliases[value]).find(Boolean);
+    if (!answer) continue;
+    next.answers[key] = answer;
+    next.confirmedKeys.push(key);
+  }
+  return next;
 }
 
 export function nextQuestion(profile: PreferenceProfile): NextQuestion | null {
@@ -68,7 +123,7 @@ export function rankProducts(profile: PreferenceProfile, catalog: Product[]): Re
   });
   scored.sort((a, b) => {
     const gap = b.score - a.score;
-    if (Math.abs(gap) <= 5 && a.product.promoted !== b.product.promoted) return a.product.promoted ? -1 : 1;
+    if (Math.abs(gap) <= GROWTH_POLICY.promotionTieThreshold && a.product.promoted !== b.product.promoted) return a.product.promoted ? -1 : 1;
     return gap || a.variant.pricePaise - b.variant.pricePaise;
   });
   if (!scored.length) return [];
@@ -83,7 +138,7 @@ export function rankProducts(profile: PreferenceProfile, catalog: Product[]): Re
     matchedNeeds: item.matched.length ? item.matched : ["Within budget", "Available now"],
     tradeoff: item.score >= 75 ? "Costs more than the lowest-priced match." : "Trades one preference for stronger overall value.",
     reason: `${item.product.name} matches ${item.matched.slice(0, 2).join(" and ") || "your budget and core use"}.`,
-    promotionInfluencedTie: item.product.promoted && Math.abs(best.score - item.score) <= 5,
+    promotionInfluencedTie: item.product.promoted && Math.abs(best.score - item.score) <= GROWTH_POLICY.promotionTieThreshold,
   }));
 }
 
@@ -96,7 +151,7 @@ export function recommendedAddons(profile: PreferenceProfile, primary: Product, 
     const aMatch = a.tags.filter((tag) => primary.tags.includes(tag)).length;
     const bMatch = b.tags.filter((tag) => primary.tags.includes(tag)).length;
     return bMatch - aMatch || a.variants[0]!.pricePaise - b.variants[0]!.pricePaise;
-  }).slice(0, 2);
+  }).slice(0, GROWTH_POLICY.maximumAddons);
 }
 
 function stableJson(value: unknown): string {
@@ -140,7 +195,7 @@ export function validateCart(cart: Cart, catalog: Product[]): { valid: boolean; 
 }
 
 export function createQuote(cart: Cart, now = new Date()): Quote {
-  const expiresAt = new Date(now.getTime() + 10 * 60_000).toISOString();
+  const expiresAt = new Date(now.getTime() + QUOTE_TTL_MS).toISOString();
   const digest = quoteDigest(cart.digest, CATALOG_VERSION, expiresAt);
   return { id: `quote_${digest.slice(0, 20)}`, cart, catalogVersion: CATALOG_VERSION, expiresAt, digest };
 }

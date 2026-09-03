@@ -1,10 +1,12 @@
 import type { Metadata } from "next";
 import "./globals.css";
 import "./choosy.css";
+import "./proof.css";
+import "./api-page.css";
 
 export const metadata: Metadata = {
   title: "Choosy — Shopping that listens",
-  description: "A bounded conversational buying agent with transparent recommendations and Razorpay Test Mode checkout.",
+  description: "A simpler way to find products that fit your budget and priorities.",
 };
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {

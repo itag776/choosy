@@ -4,6 +4,7 @@ import type { OperatorIdentity } from "@/lib/types";
 
 export const OPERATOR_COOKIE = "choosy_operator";
 const SESSION_SECONDS = 60 * 60 * 8;
+const MIN_ACCESS_CODE_LENGTH = 5;
 
 interface OperatorSession extends OperatorIdentity {
   issuedAt: number;
@@ -13,13 +14,13 @@ interface OperatorSession extends OperatorIdentity {
 export function authIsConfigured(): boolean {
   const code = process.env.CHOOSY_OPERATOR_ACCESS_CODE;
   const secret = process.env.CHOOSY_SESSION_SECRET;
-  return Boolean(code && code.length >= 12 && secret && secret.length >= 32);
+  return Boolean(code && code.length >= MIN_ACCESS_CODE_LENGTH && secret && secret.length >= 32);
 }
 
 function accessCode(): string | null {
   const configured = process.env.CHOOSY_OPERATOR_ACCESS_CODE;
-  if (configured) return configured.length >= 12 ? configured : null;
-  return process.env.NODE_ENV === "production" ? null : "choosy-demo";
+  if (configured) return configured.length >= MIN_ACCESS_CODE_LENGTH ? configured : null;
+  return process.env.NODE_ENV === "production" ? null : "admin";
 }
 
 export function choosySessionSecret(): string | null {

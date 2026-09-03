@@ -9,7 +9,10 @@
     "start": "next start",
     "lint": "eslint .",
     "eval": "vitest run tests/eval.test.ts",
-    "test": "vitest run",
+    "eval:connected": "vitest run tests/connected-agent.test.ts",
+    "benchmark": "vitest run tests/growth-benchmark.test.ts --reporter=verbose",
+    "test:e2e": "playwright test",
+    "test": "vitest run --exclude tests/connected-agent.test.ts --exclude tests/e2e/**",
     "test:watch": "vitest"
   },
   "dependencies": {
@@ -22,6 +25,7 @@
     "zod": "4.4.3"
   },
   "devDependencies": {
+    "@playwright/test": "^1.62.1",
     "@types/node": "26.2.0",
     "@types/react": "19.2.18",
     "@types/react-dom": "19.2.4",

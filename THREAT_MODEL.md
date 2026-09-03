@@ -17,4 +17,4 @@
 
 ## Residual risks
 
-The shared demo operator code is not enterprise authentication. A compromised server or service role can still create new evidence; stronger non-repudiation needs an external append-only ledger or KMS signing. Inventory is fictional, payments are Razorpay Test Mode, and all funnel metrics describe only demo sessions. Production use also requires shipping, tax, fulfillment, fraud, privacy, and merchant identity controls outside this prototype.
+The shared demo operator code is not enterprise authentication. A compromised server or service role can still create new evidence; stronger non-repudiation needs an external append-only ledger or KMS signing. The catalog uses real product identities, but its dated prices are frozen and its stock is simulated; payments are Razorpay Test Mode and all funnel metrics describe only demo sessions. Production use also requires live merchant feeds, shipping, tax, fulfillment, fraud, privacy, and merchant identity controls outside this prototype.

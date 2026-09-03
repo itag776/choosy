@@ -1,20 +1,39 @@
 import { createHash, randomUUID } from "node:crypto";
-import { CATALOG_VERSION, categoryProfile, productById, variantById } from "@/lib/catalog";
+import { CATALOG_MARKET, CATALOG_PRICE_AS_OF, CATALOG_PRICE_NOTICE, CATALOG_VERSION, categoryProfile, productById, variantById } from "@/lib/catalog";
 import { createCommerceAuditEvent } from "@/lib/commerce-audit";
-import { allQuestions, buildCart, cartDigest, createQuote, isProfileComplete, nextQuestion, quoteDigest, rankProducts, recommendedAddons, validateCart } from "@/lib/commerce-policy";
+import { allQuestions, buildCart, cartDigest, createQuote, GROWTH_POLICY, isProfileComplete, nextQuestion, QUOTE_TTL_MS, quoteDigest, rankProducts, recommendedAddons, resolveCoveredQuestions, validateCart } from "@/lib/commerce-policy";
 import { createShoppingSession, DEFAULT_MERCHANT_ID, publicShoppingSession } from "@/lib/commerce-data";
 import { checkoutIntent, createOrReconcileCheckout } from "@/lib/razorpay";
 import { createAndStoreSession, getCommerceRepository } from "@/lib/repository";
 import { applyStructuredAnswer, discoveryInputDigest, mergeAgentPatch, ShoppingAgentUnavailableError, understandShoppingMessage } from "@/lib/shopping-agent";
-import type { Cart, CartItem, ChatMessage, CommerceAuditEvent, MerchantDashboard, OperatorIdentity, Product, Quote, ShoppingCommandRequest, ShoppingPhase, ShoppingSessionSnapshot } from "@/lib/types";
+import type { Cart, CartItem, ChatMessage, CommerceAuditEvent, MerchantDashboard, OperatorIdentity, OrderReceipt, Product, Quote, ShoppingCommandRequest, ShoppingPhase, ShoppingSessionSnapshot } from "@/lib/types";
 
 export class CommerceServiceError extends Error { constructor(message: string, public status = 409) { super(message); } }
-type EventInput = Omit<CommerceAuditEvent, "id" | "sequence" | "createdAt" | "previousHash" | "hash">;
+type EventInput = Omit<CommerceAuditEvent, "id" | "schemaVersion" | "sessionVersion" | "sequence" | "createdAt" | "previousHash" | "hash">;
 
 function appendEvents(session: ShoppingSessionSnapshot, inputs: EventInput[]): CommerceAuditEvent[] { const events: CommerceAuditEvent[] = []; for (const input of inputs) { const event = createCommerceAuditEvent(session, input); session.audit.push(event); events.push(event); } return events; }
 async function persist(current: ShoppingSessionSnapshot, next: ShoppingSessionSnapshot, phase: ShoppingPhase, inputs: EventInput[]): Promise<ShoppingSessionSnapshot> { next.phase = phase; next.version = current.version + 1; next.updatedAt = new Date().toISOString(); const events = appendEvents(next, inputs); return getCommerceRepository().replace(current, next, events); }
 function message(role: ChatMessage["role"], text: string): ChatMessage { return { id: randomUUID(), role, text, createdAt: new Date().toISOString() }; }
 function requireVersion(session: ShoppingSessionSnapshot, version: number): void { if (session.version !== version) throw new CommerceServiceError("The conversation changed. Refresh and try again.", 409); }
+function structuredPreferenceChanges(before: ShoppingSessionSnapshot["profile"], after: ShoppingSessionSnapshot["profile"]): Record<string, unknown> {
+  const changes: Record<string, unknown> = {};
+  for (const key of ["category", "maxBudgetPaise", "useCase", "brandPreference", "mustHaves"] as const) if (JSON.stringify(before[key]) !== JSON.stringify(after[key])) changes[key] = after[key];
+  for (const [key, value] of Object.entries(after.answers)) if (before.answers[key] !== value) changes[key] = value;
+  return changes;
+}
+function clarificationForQuestion(key: string, choices: string[], previousAssistantText?: string): string {
+  const prompts: Record<string, string> = {
+    category: "I can help with phones, headphones, or running shoes—which should I focus on?",
+    maxBudgetPaise: "Give me a maximum amount in rupees so every option stays within your limit.",
+    useCase: "Choose the main situation: everyday, work, travel, fitness, gaming, or photography.",
+    brandPreference: "Name a favourite brand, or choose “No preference” to keep the search open.",
+    mustHaves: "Name any non-negotiable feature, or choose “No deal-breakers.”",
+  };
+  const clarification = prompts[key] ?? `To narrow this down, choose one: ${choices.join(", ")}.`;
+  if (previousAssistantText !== clarification) return clarification;
+  const labels: Record<string, string> = { category: "the product category", maxBudgetPaise: "your maximum budget", useCase: "the main use", brandPreference: "your brand preference", mustHaves: "any non-negotiable feature" };
+  return `I saved the other detail. I still need ${labels[key] ?? "this preference"}; use one of the choices below.`;
+}
 
 export async function startShoppingSession(): Promise<ShoppingSessionSnapshot> { return publicShoppingSession(await createAndStoreSession()); }
 export async function getShoppingSession(sessionId: string): Promise<ShoppingSessionSnapshot> { return publicShoppingSession(await getCommerceRepository().get(sessionId)); }
@@ -25,8 +44,9 @@ export async function sendShoppingMessage(sessionId: string, input: { text: stri
   requireVersion(current, input.expectedVersion);
   if (current.phase !== "discovering" && current.phase !== "agent_failure") throw new CommerceServiceError("Edit your criteria by starting a new search.");
   const next = structuredClone(current); next.commandReceipts.push({ idempotencyKey: input.idempotencyKey, command: "send_message", version: current.version + 1, completedAt: new Date().toISOString() }); next.messages.push(message("user", input.text));
-  let profile = current.profile; const events: EventInput[] = [{ kind: "shopper", title: "Shopper answered a discovery question", detail: "The answer was recorded without personal information.", actor: "shopper", status: "info", evidence: { activeQuestionKey: current.activeQuestionKey } }];
+  let profile = current.profile; let answerSource: "quick_choice" | "interpreted_answer" = "interpreted_answer"; const events: EventInput[] = [{ kind: "shopper", title: "Shopper answered a question", detail: "The response was processed without storing its raw text in the audit ledger.", actor: "shopper", status: "info", evidence: { activeQuestionKey: current.activeQuestionKey } }];
   if (input.answerKey && input.answerValue) {
+    answerSource = "quick_choice";
     if (input.answerKey !== current.activeQuestionKey) throw new CommerceServiceError("That answer no longer matches the active question.", 409);
     const controlledQuestion=allQuestions(current.profile).find((item)=>item.key===input.answerKey);
     if(!controlledQuestion?.choices.includes(input.answerValue)) throw new CommerceServiceError("That quick choice is not valid for the active question.",422);
@@ -38,34 +58,44 @@ export async function sendShoppingMessage(sessionId: string, input: { text: stri
       const cached = await repository.findAgentCache(digest);
       const result = await understandShoppingMessage({ profile: current.profile, message: input.text, activeQuestionKey: current.activeQuestionKey, cached });
       profile = mergeAgentPatch(current.profile, result); await repository.saveAgentRun(sessionId, result);
-      events.push(...result.toolEvents.map((tool): EventInput => ({ kind: "agent", title: tool.name, detail: tool.summary, actor: "agent", status: tool.status === "completed" ? "success" : "blocked", evidence: { mode: result.mode, inputDigest: result.inputDigest } })));
+      events.push(...result.toolEvents.map((tool): EventInput => ({ kind: "agent", title: tool.name, detail: tool.summary, actor: "agent", status: tool.status === "completed" ? "success" : "blocked", evidence: { mode: result.mode, extractionSource: result.extractionSource, durationMs: result.durationMs, inputDigest: result.inputDigest } })));
     } catch (error) {
       if (!(error instanceof ShoppingAgentUnavailableError)) throw error;
-      next.messages.push(message("assistant", "I couldn’t interpret that safely. Please retry, or use one of the quick choices.")); next.activeQuestionKey = current.activeQuestionKey;
+      next.messages.push(message("assistant", "I didn’t understand that answer. Try saying it another way, or choose one of the options below.")); next.activeQuestionKey = current.activeQuestionKey;
       return publicShoppingSession(await persist(current, next, "agent_failure", [...events, { kind: "guardrail", title: "Understanding stopped safely", detail: error.message, actor: "system", status: "blocked" }]));
     }
   }
+  const explicitlyConfirmedKeys = new Set(profile.confirmedKeys);
+  profile = resolveCoveredQuestions(profile);
+  const coveredKeys = profile.confirmedKeys.filter((key) => !explicitlyConfirmedKeys.has(key));
+  if (coveredKeys.length) events.push({ kind: "policy", title: "Redundant follow-ups skipped", detail: `${coveredKeys.join(", ")} was already answered by an equivalent confirmed preference.`, actor: "system", status: "success", evidence: { coveredKeys } });
+  const preferenceChanges = structuredPreferenceChanges(current.profile, profile);
+  if (Object.keys(preferenceChanges).length) events.push({ kind: "policy", title: "Shopping preferences updated", detail: "The structured preferences used for matching were updated.", actor: "system", status: "success", evidence: { source: answerSource, changes: preferenceChanges } });
   next.profile = profile;
   const pending = nextQuestion(profile);
   if (!pending && isProfileComplete(profile)) {
     const catalog = await repository.getCatalog(); const recommendations = rankProducts(profile, catalog);
     if (!recommendations.length) {
       next.profile.confirmedKeys = next.profile.confirmedKeys.filter((key) => key !== "maxBudgetPaise"); next.activeQuestionKey = "maxBudgetPaise";
-      next.messages.push(message("assistant", "Nothing in this merchant’s current inventory satisfies every constraint. What budget would you like me to try instead?"));
+      next.messages.push(message("assistant", "I couldn’t find a current match for everything you asked for. Would you like to try a different budget?"));
       events.push({ kind: "guardrail", title: "No compliant product found", detail: "Choosy refused to invent or stretch beyond the confirmed criteria.", actor: "system", status: "blocked" });
       return publicShoppingSession(await persist(current, next, "discovering", events));
     }
     next.recommendations = recommendations; next.activeQuestionKey = null;
-    next.messages.push(message("assistant", `I have enough context. I found ${recommendations.length} in-stock choices that stay within your budget.`));
-    events.push({ kind: "policy", title: "Discovery completeness gate passed", detail: "Every required universal and category-specific preference was explicitly answered.", actor: "system", status: "success", evidence: { confirmedKeys: profile.confirmedKeys } }, { kind: "catalog", title: "Deterministic shortlist created", detail: `${recommendations.length} catalog-backed recommendations passed budget, stock, variant and deal-breaker checks.`, actor: "system", status: "success", evidence: { productIds: recommendations.map((item) => item.productId), catalogVersion: CATALOG_VERSION } });
+    next.messages.push(message("assistant", `Thanks—that’s enough to work with. I found ${recommendations.length} available ${recommendations.length === 1 ? "match" : "matches"} within your budget.`));
+    events.push({ kind: "policy", title: "Enough preferences collected", detail: "Every required preference was answered directly or covered by an equivalent confirmed preference.", actor: "system", status: "success", evidence: { confirmedKeys: profile.confirmedKeys } }, { kind: "catalog", title: "Product matches created", detail: `${recommendations.length} available products met the shopper’s budget, preferences, and deal-breakers.`, actor: "system", status: "success", evidence: { productIds: recommendations.map((item) => item.productId), catalogVersion: CATALOG_VERSION } });
     return publicShoppingSession(await persist(current, next, "recommendations_ready", events));
   }
-  next.activeQuestionKey = pending?.key ?? current.activeQuestionKey; if (pending) next.messages.push(message("assistant", pending.prompt));
-  events.push({ kind: "policy", title: "Recommendation withheld", detail: `Choosy needs ${pending?.key ?? "more context"} before searching the catalog.`, actor: "system", status: "success", evidence: { nextQuestionKey: pending?.key } });
+  next.activeQuestionKey = pending?.key ?? current.activeQuestionKey;
+  if (pending) {
+    const previousAssistantText = [...current.messages].reverse().find((item) => item.role === "assistant")?.text;
+    next.messages.push(message("assistant", pending.key === current.activeQuestionKey ? clarificationForQuestion(pending.key, pending.choices, previousAssistantText) : pending.prompt));
+  }
+  events.push({ kind: "policy", title: "Waiting for more information", detail: `Choosy needs ${pending?.key ?? "more context"} before looking for products.`, actor: "system", status: "success", evidence: { nextQuestionKey: pending?.key } });
   return publicShoppingSession(await persist(current, next, "discovering", events));
 }
 
-export async function executeShoppingCommand(sessionId: string, input: ShoppingCommandRequest): Promise<ShoppingSessionSnapshot> {
+export async function executeShoppingCommand(sessionId: string, input: ShoppingCommandRequest, options: { paymentReturnUrl?: string } = {}): Promise<ShoppingSessionSnapshot> {
   const repository = getCommerceRepository(); const current = await repository.get(sessionId);
   if (current.commandReceipts.some((item) => item.idempotencyKey === input.idempotencyKey)) return publicShoppingSession(current);
   requireVersion(current, input.expectedVersion);
@@ -94,7 +124,7 @@ export async function executeShoppingCommand(sessionId: string, input: ShoppingC
     const productId = String(input.payload?.productId ?? ""); const recommendation = current.recommendations.find((item) => item.productId === productId); if (!recommendation) throw new CommerceServiceError("That product is not in the current shortlist.");
     const product = productById(productId, catalog); const selectedVariant = product && variantById(product, recommendation.variantId); if (!product || !selectedVariant || selectedVariant.stock < 1) throw new CommerceServiceError("That item is no longer available.");
     next.selectedProductId = product.id; next.selectedVariantId = selectedVariant.id; next.offeredAddonIds = recommendedAddons(next.profile, product, catalog).map((item) => item.id); next.cart = buildCart(product, selectedVariant, []); next.quote = null; next.checkout = null;
-    next.messages.push(message("assistant", next.offeredAddonIds.length ? "Good choice. I found two relevant extras that still fit your approved budget—you can add either or skip both." : "Good choice. No useful add-on fits the remaining budget, so I’ll keep the cart focused."));
+    next.messages.push(message("assistant", next.offeredAddonIds.length ? "Good choice. These optional extras still fit your budget, or you can skip them." : "Good choice. I’ll keep the cart to this item."));
     events.push({ kind: "cart", title: "Primary product selected", detail: `${product.name} was selected from the deterministic shortlist.`, actor: "shopper", status: "success", evidence: { productId, variantId: selectedVariant.id } });
     return publicShoppingSession(await persist(current, next, "item_selected", events));
   }
@@ -103,8 +133,8 @@ export async function executeShoppingCommand(sessionId: string, input: ShoppingC
     const addonIds = Array.isArray(input.payload?.addonIds) ? input.payload.addonIds.map(String) : []; if (addonIds.length > 2 || addonIds.some((id) => !current.offeredAddonIds.includes(id))) throw new CommerceServiceError("Only offered add-ons may be selected.");
     const product = current.selectedProductId ? productById(current.selectedProductId, catalog) : undefined; const selectedVariant = product && current.selectedVariantId ? variantById(product, current.selectedVariantId) : undefined; if (!product || !selectedVariant) throw new CommerceServiceError("The selected product is unavailable.");
     const addons = addonIds.map((id) => productById(id, catalog)).filter((item): item is Product => Boolean(item)); const cart = buildCart(product, selectedVariant, addons); if (next.profile.maxBudgetPaise && cart.totalPaise > next.profile.maxBudgetPaise) throw new CommerceServiceError("That bundle exceeds the confirmed budget.");
-    next.cart = cart; next.messages.push(message("assistant", `Your cart is ready at ₹${Math.round(cart.totalPaise / 100).toLocaleString("en-IN")}. Review it before I create any payment action.`));
-    events.push({ kind: "cart", title: addonIds.length ? "Budget-safe bundle assembled" : "Add-ons skipped", detail: addonIds.length ? `${addonIds.length} relevant add-on${addonIds.length === 1 ? "" : "s"} kept the cart within budget.` : "The shopper kept only the primary product.", actor: "shopper", status: "success", evidence: { addonIds, cartDigest: cart.digest, totalPaise: cart.totalPaise } });
+    next.cart = cart; next.messages.push(message("assistant", `Your cart comes to ₹${Math.round(cart.totalPaise / 100).toLocaleString("en-IN")}. Please review it before continuing.`));
+    events.push({ kind: "cart", title: addonIds.length ? "Cart updated" : "Extras skipped", detail: addonIds.length ? `${addonIds.length} relevant extra${addonIds.length === 1 ? "" : "s"} kept the cart within budget.` : "The shopper kept only the main product.", actor: "shopper", status: "success", evidence: { addonIds, cartDigest: cart.digest, totalPaise: cart.totalPaise } });
     return publicShoppingSession(await persist(current, next, "cart_review", events));
   }
   if (input.command === "confirm_cart") {
@@ -112,23 +142,23 @@ export async function executeShoppingCommand(sessionId: string, input: ShoppingC
     const validation = validateCart(current.cart, catalog);
     if (!validation.valid) {
       next.recommendations = rankProducts(next.profile, catalog); next.selectedProductId = null; next.selectedVariantId = null; next.offeredAddonIds = []; next.cart = null; next.quote = null; next.checkout = null;
-      next.messages.push(message("assistant", "That item became unavailable before checkout. I stopped the payment action and refreshed your shortlist—nothing was silently substituted."));
+      next.messages.push(message("assistant", "That item just went out of stock, so I stopped checkout and refreshed your matches. Nothing was charged or substituted."));
       events.push({ kind: "inventory", title: "Unavailable item blocked at checkout", detail: "Fresh inventory did not match the confirmed cart, so no Razorpay intent was created.", actor: "system", status: "blocked", evidence: validation });
       return publicShoppingSession(await persist(current, next, "needs_reselection", events));
     }
-    next.cart = { ...current.cart, confirmedAt: new Date().toISOString() }; next.quote = createQuote(next.cart); next.messages.push(message("assistant", "Stock and price are current. Your exact cart is now confirmed; payment still requires your next click."));
-    events.push({ kind: "inventory", title: "Cart revalidated", detail: "Every variant and price matched the confirmed cart.", actor: "system", status: "success", evidence: { cartDigest: next.cart.digest, totalPaise: next.cart.totalPaise } }, { kind: "policy", title: "Explicit cart approval recorded", detail: "The shopper confirmed the exact items and Test Mode amount.", actor: "shopper", status: "success", evidence: { quoteDigest: next.quote.digest } });
+    next.cart = { ...current.cart, confirmedAt: new Date().toISOString() }; next.quote = createQuote(next.cart); next.messages.push(message("assistant", "Price and stock are up to date. Your cart is ready for checkout when you are."));
+    events.push({ kind: "inventory", title: "Price and stock checked", detail: "Every item and price still matched the reviewed cart.", actor: "system", status: "success", evidence: { cartDigest: next.cart.digest, totalPaise: next.cart.totalPaise } }, { kind: "policy", title: "Cart approved", detail: "The shopper confirmed the exact items and test amount.", actor: "shopper", status: "success", evidence: { quoteDigest: next.quote.digest } });
     return publicShoppingSession(await persist(current, next, "cart_review", events));
   }
   if (input.command === "create_checkout" || input.command === "retry_payment") {
     if (!current.cart?.confirmedAt || !current.quote) throw new CommerceServiceError("Confirm the current cart before checkout.");
     if (new Date(current.quote.expiresAt).getTime() <= Date.now()) throw new CommerceServiceError("The quote expired. Confirm the cart again.");
-    const validation = validateCart(current.cart, catalog); if (!validation.valid) { next.recommendations = rankProducts(next.profile, catalog); next.selectedProductId = null; next.selectedVariantId = null; next.cart = null; next.quote = null; next.checkout = null; next.messages.push(message("assistant", "Inventory changed before checkout. I stopped and refreshed your valid options.")); return publicShoppingSession(await persist(current, next, "needs_reselection", [{ kind: "inventory", title: "Checkout stopped before provider call", detail: "The cart failed final stock or price validation.", actor: "system", status: "blocked", evidence: validation }])); }
+    const validation = validateCart(current.cart, catalog); if (!validation.valid) { next.recommendations = rankProducts(next.profile, catalog); next.selectedProductId = null; next.selectedVariantId = null; next.cart = null; next.quote = null; next.checkout = null; next.messages.push(message("assistant", "Something changed before checkout, so I stopped and refreshed your matches. Nothing was charged.")); return publicShoppingSession(await persist(current, next, "needs_reselection", [{ kind: "inventory", title: "Checkout stopped before provider call", detail: "The cart failed final stock or price validation. No Razorpay action was created.", actor: "system", status: "blocked", evidence: validation }])); }
     const action = checkoutIntent(current.id, current.quote, input.idempotencyKey); await repository.saveCheckout(action);
-    let external; try { external = await createOrReconcileCheckout(action); } catch (error) { external = { ...action, status: "failed" as const, failureReason: error instanceof Error ? error.message : "Razorpay checkout failed.", updatedAt: new Date().toISOString() }; }
+    let external; try { external = await createOrReconcileCheckout(action, options.paymentReturnUrl); } catch (error) { external = { ...action, status: "failed" as const, failureReason: error instanceof Error ? error.message : "Razorpay checkout failed.", updatedAt: new Date().toISOString() }; }
     await repository.saveCheckout(external); next.checkout = external;
     if (external.status === "created" || external.status === "paid") {
-      next.messages.push(message("assistant", external.status === "paid" ? "Razorpay already confirms this exact Test Mode order as paid." : "Your secure Razorpay Test Mode checkout is ready."));
+      next.messages.push(message("assistant", external.status === "paid" ? "Razorpay has already confirmed this test payment." : "Your Razorpay checkout is ready."));
       events.push({ kind: "razorpay", title: external.status === "paid" ? "Existing payment reconciled" : "Razorpay checkout created", detail: "The provider action matches the confirmed cart digest, quote, reference and amount.", actor: "razorpay", status: "success", evidence: { providerId: external.providerId, referenceId: external.referenceId, amountPaise: external.amountPaise } });
       return publicShoppingSession(await persist(current, next, external.status === "paid" ? "paid" : "checkout_ready", events));
     }
@@ -140,14 +170,19 @@ export async function executeShoppingCommand(sessionId: string, input: ShoppingC
 }
 
 export async function merchantDashboard(operator: OperatorIdentity): Promise<MerchantDashboard> {
-  if (operator.merchantId !== DEFAULT_MERCHANT_ID) throw new CommerceServiceError("Merchant access denied.", 403); const sessions = await getCommerceRepository().list(); const total = sessions.length || 1;
+  if (operator.merchantId !== DEFAULT_MERCHANT_ID) throw new CommerceServiceError("Merchant access denied.", 403); const repository = getCommerceRepository(); const storedSessions = await repository.list(); const trails = await Promise.all(storedSessions.map((session) => repository.getAuditTrail(session.id))); for (const [index, session] of storedSessions.entries()) { const latestVersion = trails[index]!.events.at(-1)?.sessionVersion; if (typeof latestVersion === "number" && latestVersion !== session.version) trails[index]!.integrity = { ...trails[index]!.integrity, verified: false, issue: "The ledger does not match the latest session version." }; } const sessions = storedSessions.map((session, index) => ({ ...session, audit: trails[index]!.events })); const auditIntegrity = Object.fromEntries(sessions.map((session, index) => [session.id, trails[index]!.integrity])); const total = sessions.length || 1;
   const recommended = sessions.filter((item) => item.recommendations.length > 0).length; const carts = sessions.filter((item) => item.cart).length; const checkouts = sessions.filter((item) => item.checkout).length; const paid = sessions.filter((item) => item.phase === "paid"); const attached = sessions.filter((item) => item.cart?.items.some((entry) => entry.kind === "addon")).length;
-  return { sessions, metrics: { totalSessions: sessions.length, recommendationRate: recommended / total, cartRate: carts / total, checkoutRate: checkouts / total, paidTestModePaise: paid.reduce((sum, item) => sum + (item.checkout?.amountPaise ?? 0), 0), addonAttachRate: attached / total }, integration: sessions[0]?.integration ?? createShoppingSession().integration };
+  return { sessions, metrics: { totalSessions: sessions.length, recommendationRate: recommended / total, cartRate: carts / total, checkoutRate: checkouts / total, paidTestModePaise: paid.reduce((sum, item) => sum + (item.checkout?.amountPaise ?? 0), 0), addonAttachRate: attached / total }, auditChainsValid: trails.every((trail) => trail.integrity.verified), auditIntegrity, integration: sessions[0]?.integration ?? createShoppingSession().integration };
 }
 
 export async function markSelectedItemUnavailable(sessionId: string, operator: OperatorIdentity): Promise<ShoppingSessionSnapshot> {
   if (operator.merchantId !== DEFAULT_MERCHANT_ID) throw new CommerceServiceError("Merchant access denied.", 403); const repository = getCommerceRepository(); const current = await repository.get(sessionId); if (!current.selectedVariantId) throw new CommerceServiceError("This session has no selected variant."); await repository.setVariantStock(current.selectedVariantId, 0); const catalog = await repository.getCatalog(); const selectedName = catalog.find((item) => item.id === current.selectedProductId)?.name ?? "Selected item";
   return publicShoppingSession(await persist(current, structuredClone(current), current.phase, [{ kind: "inventory", title: "Demo inventory change applied", detail: `${selectedName} was marked unavailable by the merchant demo control. Checkout must revalidate before any money action.`, actor: "merchant", status: "warning", evidence: { variantId: current.selectedVariantId, demoControl: true } }]));
+}
+
+export async function restoreDemoInventory(sessionId: string, operator: OperatorIdentity): Promise<ShoppingSessionSnapshot> {
+  if (operator.merchantId !== DEFAULT_MERCHANT_ID) throw new CommerceServiceError("Merchant access denied.", 403); const repository = getCommerceRepository(); const current = await repository.get(sessionId); await repository.restoreDemoInventory();
+  return publicShoppingSession(await persist(current, structuredClone(current), current.phase, [{ kind: "inventory", title: "Demo inventory restored", detail: "Simulated stock for the curated real-product catalog was restored to its seeded Test Mode quantities for another rehearsal.", actor: "merchant", status: "success", evidence: { demoControl: true } }]));
 }
 
 function payloadEntity(payload: Record<string, unknown>, name: "payment_link" | "payment"): Record<string, unknown> | undefined { return ((payload.payload as Record<string, unknown> | undefined)?.[name] as { entity?: Record<string, unknown> } | undefined)?.entity; }
@@ -165,7 +200,7 @@ export async function processRazorpayWebhook(input: { eventId: string; eventType
 }
 
 export async function catalogSnapshot(): Promise<Product[]> { return getCommerceRepository().getCatalog(); }
-export function commerceCapabilities() { return { name: "Choosy", version: "2026-09-v1", mode: "razorpay_test", currency: "INR", categories: ["phones", "headphones", "running-shoes"], catalogVersion: CATALOG_VERSION, constraints: { requiresExplicitConfirmation: true, revalidatesPriceAndStock: true, maximumAddons: 2, personalInformationInChat: false }, endpoints: { catalog: "/api/catalog", quote: "/api/commerce/quotes", checkout: "/api/commerce/checkouts" } }; }
+export function commerceCapabilities() { return { name: "Choosy", version: "2026-09-v2", mode: "razorpay_test", currency: "INR", categories: ["phones", "headphones", "running-shoes"], catalogVersion: CATALOG_VERSION, catalog: { mode: "curated_snapshot", market: CATALOG_MARKET, priceAsOf: CATALOG_PRICE_AS_OF, priceNotice: CATALOG_PRICE_NOTICE, externalRetailApi: false, runtimeCatalogCost: "free" }, quoteTtlSeconds: QUOTE_TTL_MS / 1000, constraints: { ...GROWTH_POLICY, revalidatesPriceAndStock: true, personalInformationInChat: false }, authentication: { catalog: "public", quote: "public", checkout: "X-Commerce-Demo-Key", order: "X-Commerce-Demo-Key" }, confirmation: { field: "confirmation", requiredValue: true, binds: "acceptedQuoteDigest" }, endpoints: { catalog: { method: "GET", path: "/api/catalog" }, quote: { method: "POST", path: "/api/commerce/quotes" }, checkout: { method: "POST", path: "/api/commerce/checkouts" }, order: { method: "GET", path: "/api/commerce/orders/{sessionId}" } } }; }
 export function questionForSession(session: ShoppingSessionSnapshot) { const question = nextQuestion(session.profile); return question ? { key: question.key, prompt: question.prompt, choices: question.choices } : null; }
 export function categorySummary(session: ShoppingSessionSnapshot): string | null { return session.profile.category ? categoryProfile(session.profile.category).label : null; }
 
@@ -181,14 +216,23 @@ export async function createMachineQuote(requested: Array<{ productId: string; v
   return createQuote(cart);
 }
 
-export async function createMachineCheckout(quote: Quote, acceptedQuoteDigest: string, idempotencyKey: string): Promise<{ sessionId: string; checkout: ShoppingSessionSnapshot["checkout"] }> {
+export async function createMachineCheckout(quote: Quote, acceptedQuoteDigest: string, idempotencyKey: string, buyerRunId?: string, paymentReturnUrl?: string): Promise<{ sessionId: string; checkout: ShoppingSessionSnapshot["checkout"] }> {
   if (quote.digest !== acceptedQuoteDigest) throw new CommerceServiceError("The accepted quote digest does not match.", 422);
   if (quote.catalogVersion !== CATALOG_VERSION || quote.digest !== quoteDigest(quote.cart.digest, quote.catalogVersion, quote.expiresAt)) throw new CommerceServiceError("The quote integrity check failed.", 422);
   if (new Date(quote.expiresAt).getTime() <= Date.now()) throw new CommerceServiceError("The accepted quote expired.", 409);
   const fresh = await createAndStoreSession(); const catalog = await getCommerceRepository().getCatalog(); const validation = validateCart(quote.cart, catalog);
-  if (!validation.valid) throw new CommerceServiceError("The accepted quote no longer matches stock or price.", 409);
-  const staged = structuredClone(fresh); staged.cart = { ...quote.cart, confirmedAt: new Date().toISOString() }; staged.quote = quote;
-  const ready = await persist(fresh, staged, "cart_review", [{ kind: "policy", title: "Agent buyer quote accepted", detail: "An authenticated agent buyer explicitly accepted the exact quote digest.", actor: "shopper", status: "success", evidence: { quoteDigest: quote.digest } }]);
-  const completed = await executeShoppingCommand(ready.id, { command: "create_checkout", expectedVersion: ready.version, idempotencyKey });
+  if (!validation.valid) {
+    const blocked = structuredClone(fresh); blocked.origin = "external_agent"; blocked.buyerRunId = buyerRunId; blocked.cart = quote.cart; blocked.quote = quote;
+    await persist(fresh, blocked, "needs_reselection", [{ kind: "inventory", title: "Checkout stopped", detail: "Stock or price changed after the cart was prepared. No Razorpay action was created and no item was substituted.", actor: "system", status: "blocked", evidence: { buyerRunId, quoteDigest: quote.digest, validation } }]);
+    throw Object.assign(new CommerceServiceError("The accepted quote no longer matches stock or price. No Razorpay action was created; request a fresh quote.", 409), { sessionId: fresh.id });
+  }
+  const staged = structuredClone(fresh); staged.origin = "external_agent"; staged.buyerRunId = buyerRunId; staged.cart = { ...quote.cart, confirmedAt: new Date().toISOString() }; staged.quote = quote;
+  const ready = await persist(fresh, staged, "cart_review", [{ kind: "policy", title: "Agent buyer quote accepted", detail: "An authenticated agent buyer received explicit approval for the exact quote digest.", actor: "buyer_agent", status: "success", evidence: { quoteDigest: quote.digest, buyerRunId } }]);
+  const completed = await executeShoppingCommand(ready.id, { command: "create_checkout", expectedVersion: ready.version, idempotencyKey }, { paymentReturnUrl });
   return { sessionId: completed.id, checkout: completed.checkout };
+}
+
+export async function machineOrderReceipt(sessionId: string): Promise<OrderReceipt> {
+  const session = await getCommerceRepository().get(sessionId);
+  return { sessionId: session.id, status: session.phase, amountPaise: session.checkout?.amountPaise ?? null, referenceId: session.checkout?.referenceId ?? null, providerId: session.checkout?.providerId ?? null, origin: session.origin ?? "shopper_ui", buyerRunId: session.buyerRunId ?? null, updatedAt: session.updatedAt };
 }

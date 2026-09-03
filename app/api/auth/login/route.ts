@@ -5,7 +5,7 @@ import { createOperatorToken, OPERATOR_COOKIE, operatorCookieOptions, verifyAcce
 
 const LoginSchema = z.object({
   actorId: z.string().regex(/^operator_[a-z0-9_-]{2,32}$/),
-  accessCode: z.string().min(8).max(128),
+  accessCode: z.string().min(5).max(128),
 });
 
 export async function POST(request: Request) {

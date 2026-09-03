@@ -11,8 +11,8 @@ export function createShoppingSession(now = new Date(), sessionId = `shop_${rand
   const profile = emptyPreferenceProfile();
   const firstQuestion = nextQuestion(profile)!;
   const session: ShoppingSessionSnapshot = {
-    id: sessionId, merchantId: DEFAULT_MERCHANT_ID, phase: "discovering", version: 1, profile, activeQuestionKey: firstQuestion.key,
-    messages: [{ id: randomUUID(), role: "assistant", text: "Tell me what you’re looking for. I’ll ask what matters before I recommend anything.", createdAt }],
+    id: sessionId, merchantId: DEFAULT_MERCHANT_ID, origin: "shopper_ui", phase: "discovering", version: 1, profile, activeQuestionKey: firstQuestion.key,
+    messages: [{ id: randomUUID(), role: "assistant", text: "What are you shopping for? Tell me in your own words, or choose an example below.", createdAt }],
     recommendations: [], selectedProductId: null, selectedVariantId: null, offeredAddonIds: [], cart: null, quote: null, checkout: null,
     audit: [], commandReceipts: [], processedWebhookIds: [], catalogVersion: CATALOG_VERSION,
     integration: { gemini: Boolean(process.env.GEMINI_API_KEY), razorpay: Boolean(process.env.RAZORPAY_KEY_ID && process.env.RAZORPAY_KEY_SECRET), webhookSecret: Boolean(process.env.RAZORPAY_WEBHOOK_SECRET), persistence: process.env.NEXT_PUBLIC_SUPABASE_URL && (process.env.SUPABASE_SECRET_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY) ? "supabase" : "local_file" },

@@ -3,7 +3,7 @@ import type { ProductCategory } from "@/lib/types";
 
 const universalChoices: Record<string, string[]> = {
   category: ["Phone", "Headphones", "Running shoes"],
-  maxBudgetPaise: ["₹5,000", "₹10,000", "₹25,000", "₹50,000", "₹70,000"],
+  maxBudgetPaise: ["₹5,000", "₹10,000", "₹25,000", "₹50,000", "₹70,000", "₹1,00,000"],
   useCase: ["Everyday", "Work", "Travel", "Fitness", "Gaming", "Photography"],
   brandPreference: ["No preference"],
   mustHaves: ["No deal-breakers"],

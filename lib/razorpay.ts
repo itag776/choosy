@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 import type { CheckoutAction, Quote } from "@/lib/types";
 
-const PaymentLinkSchema = z.object({ id: z.string().min(1), short_url: z.string().url(), reference_id: z.string(), amount: z.number().int().nonnegative(), status: z.enum(["created", "issued", "paid", "partially_paid", "cancelled", "expired"]) });
+const PaymentLinkSchema = z.object({ id: z.string().min(1), short_url: z.string().url(), reference_id: z.string(), amount: z.number().int().nonnegative(), status: z.enum(["created", "issued", "paid", "partially_paid", "cancelled", "expired"]), callback_url: z.string().url().optional().or(z.literal("")), callback_method: z.string().optional() });
 type PaymentLink = z.infer<typeof PaymentLinkSchema>;
 
 export function parsePaymentLinkList(value: unknown): PaymentLink[] { return z.object({ payment_links: z.array(PaymentLinkSchema) }).parse(value).payment_links; }
@@ -24,14 +24,23 @@ async function findByReference(referenceId: string): Promise<PaymentLink | null>
 
 function mergeProvider(action: CheckoutAction, link: PaymentLink): CheckoutAction { return { ...action, providerId: link.id, shortUrl: link.short_url, providerStatus: link.status, status: link.status === "paid" ? "paid" : "created", updatedAt: new Date().toISOString() }; }
 
-export async function createOrReconcileCheckout(action: CheckoutAction): Promise<CheckoutAction> {
+function safeCallbackUrl(value?: string): string | undefined {
+  if (!value) return undefined;
+  const url = new URL(value);
+  if (url.protocol !== "https:" && !(url.protocol === "http:" && ["localhost", "127.0.0.1"].includes(url.hostname))) throw new Error("Razorpay return URL must use HTTPS.");
+  if (url.username || url.password) throw new Error("Razorpay return URL cannot contain credentials.");
+  return url.toString();
+}
+
+export async function createOrReconcileCheckout(action: CheckoutAction, paymentReturnUrl?: string): Promise<CheckoutAction> {
   if (!process.env.RAZORPAY_KEY_ID || !process.env.RAZORPAY_KEY_SECRET) return { ...action, status: "preview", failureReason: "Razorpay Test Mode keys are not configured; no checkout URL was fabricated.", updatedAt: new Date().toISOString() };
   const existing = await findByReference(action.referenceId);
   if (existing) return mergeProvider(action, existing);
   try {
+    const callbackUrl = safeCallbackUrl(paymentReturnUrl);
     const response = await fetch("https://api.razorpay.com/v1/payment_links", {
       method: "POST", headers: { Authorization: authHeader(), "Content-Type": "application/json" },
-      body: JSON.stringify({ amount: action.amountPaise, currency: "INR", reference_id: action.referenceId, description: "Choosy Test Mode order", expire_by: Math.floor(Date.now() / 1000) + 3_600, reminder_enable: false, notify: { email: false, sms: false }, notes: { choosy_session_id: action.sessionId, choosy_cart_id: action.cartId, choosy_cart_digest: action.cartDigest, choosy_quote_digest: action.quoteDigest, choosy_reference_id: action.referenceId, environment: "test_mode" } }),
+      body: JSON.stringify({ amount: action.amountPaise, currency: "INR", reference_id: action.referenceId, description: "Choosy Test Mode order", expire_by: Math.floor(Date.now() / 1000) + 3_600, reminder_enable: false, notify: { email: false, sms: false }, ...(callbackUrl ? { callback_url: callbackUrl, callback_method: "get" } : {}), notes: { choosy_session_id: action.sessionId, choosy_cart_id: action.cartId, choosy_cart_digest: action.cartDigest, choosy_quote_digest: action.quoteDigest, choosy_reference_id: action.referenceId, environment: "test_mode" } }),
       signal: AbortSignal.timeout(8_000),
     });
     if (!response.ok) throw new Error(`Razorpay Payment Link creation failed (${response.status}): ${(await response.text()).slice(0, 220)}`);

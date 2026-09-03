@@ -15,6 +15,25 @@
   line-height: 10px;
 }
 
+.catalog-truth {
+  margin: 10px 0 14px;
+  color: #667085;
+  font-size: 11px;
+}
+
+.product-source {
+  display: inline-block;
+  margin: -2px 0 10px;
+  color: #3975ea;
+  font-size: 11px;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.product-source:hover {
+  text-decoration: underline;
+}
+
 .checkout-ready.failure {
   border-color: rgba(154, 54, 44, 0.22);
   background: #fff8f4;
@@ -131,4 +150,541 @@ body {
 
 .audit-filter select {
   background: #132644;
+}
+
+/* Simpler, shopper-first presentation. */
+.shop-header,
+.shop-intro,
+.experience-grid {
+  max-width: 1240px;
+}
+
+.shop-intro {
+  padding-top: 52px;
+  padding-bottom: 34px;
+  align-items: center;
+}
+
+.shop-intro h1,
+.cockpit-hero h1 {
+  max-width: 760px;
+  font-size: clamp(42px, 5vw, 64px);
+  line-height: 1.02;
+  letter-spacing: -3.6px;
+}
+
+.shop-intro > div > p:last-child {
+  max-width: 610px;
+  margin-top: 20px;
+  font-size: 16px;
+}
+
+.trust-strip {
+  min-width: 260px;
+}
+
+.experience-grid {
+  grid-template-columns: minmax(340px, 0.78fr) minmax(560px, 1.22fr);
+  padding-bottom: 64px;
+}
+
+.conversation-panel {
+  height: 680px;
+}
+
+.decision-panel {
+  min-height: 680px;
+  padding: 24px;
+}
+
+.empty-decision {
+  min-height: 630px;
+  background: linear-gradient(180deg, #f8fbff 0%, #ffffff 100%);
+}
+
+.empty-decision h2,
+.decision-heading h2 {
+  font-size: 32px;
+  letter-spacing: -1.4px;
+}
+
+.match-details,
+.product-details {
+  border-top: 1px solid var(--line);
+  margin-top: 12px;
+  padding-top: 10px;
+}
+
+.match-details summary,
+.product-details summary,
+.technical-details summary,
+.full-test > summary,
+.system-status > summary {
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 750;
+  list-style: none;
+}
+
+.match-details summary::-webkit-details-marker,
+.product-details summary::-webkit-details-marker,
+.technical-details summary::-webkit-details-marker,
+.full-test > summary::-webkit-details-marker,
+.system-status > summary::-webkit-details-marker {
+  display: none;
+}
+
+.match-details summary::after,
+.product-details summary::after,
+.technical-details > summary::after,
+.system-status > summary::after {
+  content: "+";
+  float: right;
+  color: var(--muted);
+}
+
+.match-details[open] summary::after,
+.product-details[open] summary::after,
+.technical-details[open] > summary::after,
+.system-status[open] > summary::after {
+  content: "−";
+}
+
+.match-details > p {
+  min-height: 0;
+  margin: 10px 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.product-details .product-source {
+  margin: 10px 0 0;
+}
+
+.how-section {
+  max-width: 1156px;
+  padding: 54px 42px 34px;
+}
+
+.how-section > h2 {
+  max-width: 620px;
+  margin-bottom: 32px;
+  font-size: clamp(32px, 4vw, 48px);
+  letter-spacing: -2px;
+}
+
+.how-section > div {
+  grid-template-columns: repeat(3, 1fr);
+}
+
+.how-section h3 {
+  margin-top: 20px;
+}
+
+.how-section footer {
+  display: flex;
+  gap: 22px;
+  padding-top: 28px;
+}
+
+.how-section footer a {
+  color: #b8c8e8;
+  font-size: 11px;
+}
+
+/* Compact proof pages with progressive disclosure. */
+.evidence-header,
+.buyer-header,
+.evidence-hero,
+.buyer-hero,
+.evidence-score,
+.evidence-grid,
+.buyer-layout {
+  max-width: 1180px;
+}
+
+.evidence-hero,
+.buyer-hero {
+  padding-top: 44px;
+  padding-bottom: 26px;
+}
+
+.evidence-hero h1,
+.buyer-hero h1 {
+  max-width: 760px;
+  font-size: clamp(42px, 5vw, 60px);
+  line-height: 1.02;
+  letter-spacing: -3px;
+}
+
+.evidence-hero > p:last-child,
+.buyer-hero > p:last-child {
+  max-width: 650px;
+  margin-bottom: 0;
+}
+
+.buyer-layout {
+  grid-template-columns: 0.82fr 1.18fr;
+}
+
+.buyer-panel,
+.buyer-proof {
+  padding: 22px;
+}
+
+.buyer-proof {
+  min-height: 390px;
+}
+
+.buyer-empty {
+  min-height: 330px;
+}
+
+.proposal-card {
+  margin-top: 10px;
+}
+
+.technical-details {
+  margin-top: 16px;
+  border-top: 1px solid var(--line);
+  padding-top: 14px;
+}
+
+.technical-details[open] > summary {
+  margin-bottom: 12px;
+}
+
+.technical-details dl {
+  margin: 12px 0 0;
+  display: grid;
+  gap: 7px;
+}
+
+.technical-details dl div {
+  display: grid;
+  grid-template-columns: 130px 1fr;
+  gap: 12px;
+  font-size: 9px;
+}
+
+.technical-details dt {
+  color: var(--muted);
+}
+
+.technical-details dd {
+  margin: 0;
+  word-break: break-all;
+}
+
+.evidence-score.simple {
+  grid-template-columns: repeat(3, 1fr);
+  padding-bottom: 0;
+}
+
+.evidence-score.simple article {
+  min-height: 125px;
+}
+
+.full-test {
+  max-width: 1112px;
+  margin: 12px auto 0;
+  padding: 0 34px;
+}
+
+.full-test > summary {
+  display: flex;
+  justify-content: space-between;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--white);
+  padding: 15px 18px;
+  font-size: 12px;
+}
+
+.full-test > summary::after {
+  content: "Show +";
+  color: var(--green);
+}
+
+.full-test[open] > summary::after {
+  content: "Hide −";
+}
+
+.full-test .evidence-grid {
+  padding: 10px 0 0;
+}
+
+.policy-strip {
+  max-width: 1112px;
+}
+
+/* Merchant audit timeline. */
+.metric-grid {
+  grid-template-columns: repeat(4, 1fr);
+}
+
+.metric-grid article {
+  min-height: 125px;
+}
+
+.system-status {
+  min-width: 170px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 10px;
+  padding: 12px;
+}
+
+.system-status > summary {
+  color: #d7e2f6;
+}
+
+.system-status .integration-row {
+  margin-top: 12px;
+  flex-wrap: wrap;
+}
+
+.audit-filter button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 31px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 7px;
+  background: #132644;
+  color: #cbd4cd;
+  padding: 7px 9px;
+  font-size: 9px;
+}
+
+.audit-filter button.active {
+  border-color: #72a3ff;
+  color: #ffffff;
+}
+
+.audit-filter button:disabled {
+  cursor: not-allowed;
+  opacity: 0.35;
+}
+
+.audit-integrity {
+  margin: 16px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid rgba(114, 163, 255, 0.35);
+  border-radius: 10px;
+  background: rgba(114, 163, 255, 0.08);
+  padding: 13px 15px;
+}
+
+.audit-integrity.failed {
+  border-color: rgba(255, 126, 104, 0.4);
+  background: rgba(255, 126, 104, 0.08);
+  color: #ffb4a4;
+}
+
+.audit-integrity div {
+  display: grid;
+  gap: 3px;
+}
+
+.audit-integrity b {
+  font-size: 11px;
+}
+
+.audit-integrity span {
+  color: #93a4bc;
+  font-size: 9px;
+}
+
+.audit-list {
+  max-height: 680px;
+  padding: 4px 17px 17px;
+}
+
+.audit-event {
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.audit-event > summary {
+  display: grid;
+  grid-template-columns: 28px 34px minmax(180px, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 13px 0;
+  cursor: pointer;
+  list-style: none;
+}
+
+.audit-event > summary::-webkit-details-marker {
+  display: none;
+}
+
+.audit-sequence {
+  color: #74869f;
+  font-size: 9px;
+  font-variant-numeric: tabular-nums;
+}
+
+.audit-title {
+  display: grid;
+  gap: 4px;
+}
+
+.audit-title b {
+  font-size: 11px;
+}
+
+.audit-title small,
+.audit-event time {
+  color: #7f8da1;
+  font-size: 8px;
+}
+
+.audit-outcome {
+  text-transform: capitalize;
+}
+
+.audit-outcome.blocked,
+.audit-outcome.warning {
+  color: #ffad9b;
+}
+
+.audit-outcome.success {
+  color: #9fc0ff;
+}
+
+.audit-body {
+  padding: 0 0 14px 72px;
+}
+
+.audit-body > p {
+  margin: 0;
+  color: #a9b6c8;
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.audit-technical {
+  margin-top: 12px;
+  border-radius: 8px;
+  background: #10213a;
+  padding: 12px;
+}
+
+.audit-technical dl {
+  margin: 0 0 12px;
+  display: grid;
+  gap: 7px;
+}
+
+.audit-technical dl div {
+  display: grid;
+  grid-template-columns: 110px minmax(0, 1fr);
+  gap: 10px;
+  font-size: 8px;
+}
+
+.audit-technical dt {
+  color: #73859e;
+}
+
+.audit-technical dd {
+  margin: 0;
+  word-break: break-all;
+}
+
+.audit-technical > b {
+  font-size: 9px;
+}
+
+.audit-technical pre {
+  overflow: auto;
+  margin: 8px 0 0;
+  color: #c9d7ea;
+  font-size: 8px;
+  white-space: pre-wrap;
+}
+
+@media (max-width: 1000px) {
+  .experience-grid,
+  .buyer-layout,
+  .evidence-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .conversation-panel {
+    height: 640px;
+  }
+}
+
+@media (max-width: 680px) {
+  .shop-header {
+    height: auto;
+    min-height: 66px;
+    flex-wrap: wrap;
+    gap: 14px;
+    padding-top: 14px;
+    padding-bottom: 14px;
+  }
+
+  .shop-header nav {
+    width: 100%;
+    flex-wrap: wrap;
+    justify-content: flex-start;
+    gap: 10px 18px;
+  }
+
+  .shop-header nav > a:not(.merchant-link) {
+    display: flex;
+  }
+
+  .shop-header nav a {
+    font-size: 11px;
+  }
+
+  .shop-header .merchant-link {
+    padding: 6px 10px;
+  }
+
+  .shop-intro h1,
+  .cockpit-hero h1,
+  .evidence-hero h1,
+  .buyer-hero h1 {
+    font-size: 40px;
+    letter-spacing: -2.4px;
+  }
+
+  .how-section > div,
+  .evidence-score.simple,
+  .metric-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .how-section footer,
+  .cockpit-hero {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .full-test {
+    padding: 0 18px;
+  }
+
+  .audit-filter {
+    flex-wrap: wrap;
+  }
+
+  .audit-event > summary {
+    grid-template-columns: 28px 28px 1fr;
+  }
+
+  .audit-event time {
+    grid-column: 3;
+  }
+
+  .audit-body {
+    padding-left: 66px;
+  }
 }
