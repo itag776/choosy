@@ -1,5 +1,5 @@
 import { apiError, ok } from "@/lib/http";
 import { merchantDashboard } from "@/lib/commerce-service";
-import { requireOperatorSession } from "@/lib/operator-session";
+import { DEMO_MERCHANT_OPERATOR } from "@/lib/commerce-data";
 export const dynamic = "force-dynamic";
-export async function GET() { try { return ok(await merchantDashboard(await requireOperatorSession())); } catch (error) { return apiError(error); } }
+export async function GET() { try { return ok(await merchantDashboard(DEMO_MERCHANT_OPERATOR)); } catch (error) { return apiError(error); } }

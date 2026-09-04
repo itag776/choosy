@@ -61,7 +61,7 @@ function runArm(choosy: boolean): GrowthBenchmarkMetrics {
   let completed = 0; let gmv = 0; let addons = 0; let violations = 0; let invalid = 0;
   for (const scenario of GROWTH_BENCHMARK_SCENARIOS) {
     const primary = choosy
-      ? DEMO_CATALOG.find((item) => item.id === rankProducts(scenario.profile, DEMO_CATALOG)[0]?.productId)
+      ? DEMO_CATALOG.find((item) => item.id === rankProducts(scenario.profile, DEMO_CATALOG).recommendations[0]?.productId)
       : DEMO_CATALOG.find((item) => item.kind === "primary" && item.category === scenario.profile.category && Boolean(firstVariant(item, scenario.profile)) && firstVariant(item, scenario.profile)!.pricePaise <= scenario.profile.maxBudgetPaise!);
     if (!satisfies(primary, scenario)) { violations += 1; invalid += 1; continue; }
     const variant = firstVariant(primary!, scenario.profile)!;

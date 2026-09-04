@@ -73,6 +73,11 @@ export interface Recommendation {
   promotionInfluencedTie: boolean;
 }
 
+export interface RankResult {
+  recommendations: Recommendation[];
+  brandFallback: boolean;
+}
+
 export interface CartItem {
   productId: string;
   variantId: string;

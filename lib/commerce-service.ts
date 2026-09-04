@@ -3,9 +3,9 @@ import { CATALOG_MARKET, CATALOG_PRICE_AS_OF, CATALOG_PRICE_NOTICE, CATALOG_VERS
 import { createCommerceAuditEvent } from "@/lib/commerce-audit";
 import { allQuestions, buildCart, cartDigest, createQuote, GROWTH_POLICY, isProfileComplete, nextQuestion, QUOTE_TTL_MS, quoteDigest, rankProducts, recommendedAddons, resolveCoveredQuestions, validateCart } from "@/lib/commerce-policy";
 import { createShoppingSession, DEFAULT_MERCHANT_ID, publicShoppingSession } from "@/lib/commerce-data";
-import { checkoutIntent, createOrReconcileCheckout } from "@/lib/razorpay";
-import { createAndStoreSession, getCommerceRepository } from "@/lib/repository";
-import { applyStructuredAnswer, discoveryInputDigest, mergeAgentPatch, ShoppingAgentUnavailableError, understandShoppingMessage } from "@/lib/shopping-agent";
+import { checkoutIntent, createOrReconcileCheckout, fetchPaymentLink } from "@/lib/razorpay";
+import { createAndStoreSession, getCommerceRepository, RepositoryConflictError } from "@/lib/repository";
+import { applyStructuredAnswer, classifyShoppingMessage, discoveryInputDigest, mergeAgentPatch, ShoppingAgentUnavailableError, understandShoppingMessage, type ShoppingMessageBoundary } from "@/lib/shopping-agent";
 import type { Cart, CartItem, ChatMessage, CommerceAuditEvent, MerchantDashboard, OperatorIdentity, OrderReceipt, Product, Quote, ShoppingCommandRequest, ShoppingPhase, ShoppingSessionSnapshot } from "@/lib/types";
 
 export class CommerceServiceError extends Error { constructor(message: string, public status = 409) { super(message); } }
@@ -34,17 +34,98 @@ function clarificationForQuestion(key: string, choices: string[], previousAssist
   const labels: Record<string, string> = { category: "the product category", maxBudgetPaise: "your maximum budget", useCase: "the main use", brandPreference: "your brand preference", mustHaves: "any non-negotiable feature" };
   return `I saved the other detail. I still need ${labels[key] ?? "this preference"}; use one of the choices below.`;
 }
+function activeQuestionPrompt(session: ShoppingSessionSnapshot): string {
+  return allQuestions(session.profile).find((question) => question.key === session.activeQuestionKey)?.prompt ?? "What would you like to choose?";
+}
+function boundaryResponse(boundary: Exclude<ShoppingMessageBoundary, { kind: "continue" }>, session: ShoppingSessionSnapshot, previousAssistantText?: string): string {
+  const supported = "phones, headphones, or running shoes";
+  const repeated = previousAssistantText?.includes("phones, headphones, or running shoes") ?? false;
+  const currentCategory = session.profile.category === "running-shoes" ? "running shoes" : session.profile.category;
+  if (boundary.kind === "sensitive_data") {
+    const lead = previousAssistantText?.startsWith("Please don’t share") ? "I still can’t accept personal or payment details here." : "Please don’t share card numbers, contact details, addresses, passwords, OTPs, or other payment information here.";
+    return `${lead} I removed that message from the conversation. ${activeQuestionPrompt(session)}`;
+  }
+  if (boundary.kind === "multiple_categories") {
+    return repeated
+      ? `Let’s take one category at a time. Choose ${supported} to begin.`
+      : `I can compare one category at a time. Would you like to start with ${supported}?`;
+  }
+  if (boundary.kind === "unsupported_category") {
+    if (session.profile.category && session.activeQuestionKey !== "category") {
+      return previousAssistantText?.startsWith("I can’t search for")
+        ? `I’m still limited to phones, headphones, and running shoes. Let’s finish choosing your ${currentCategory}: ${activeQuestionPrompt(session)}`
+        : `I can’t search for ${boundary.requestedProduct ?? "that product"} yet. I can keep helping with ${currentCategory}. ${activeQuestionPrompt(session)}`;
+    }
+    return repeated
+      ? `Those are still the three categories I can search today: ${supported}. Choose one below.`
+      : `I can only help with ${supported} right now. Choose one below and I’ll narrow down the best options.`;
+  }
+  if (boundary.kind === "greeting") return repeated ? `Hi again! Pick ${supported} and we’ll get started.` : `Hi! I can help you compare ${supported}. What are you shopping for?`;
+  return repeated
+    ? `I’m focused on shopping for ${supported}. Choose one below to continue.`
+    : `I can’t help with that topic, but I can help you choose ${supported}. Which one should we look at?`;
+}
+function unclearResponse(session: ShoppingSessionSnapshot, previousAssistantText?: string): string {
+  if (session.activeQuestionKey === "category") return boundaryResponse({ kind: "unsupported_category" }, session, previousAssistantText);
+  const prompt = activeQuestionPrompt(session);
+  return previousAssistantText?.includes(prompt)
+    ? "I still couldn’t connect that answer to the current question. Choose one of the options below."
+    : `I couldn’t connect that answer to what I need next. ${prompt}`;
+}
 
 export async function startShoppingSession(): Promise<ShoppingSessionSnapshot> { return publicShoppingSession(await createAndStoreSession()); }
 export async function getShoppingSession(sessionId: string): Promise<ShoppingSessionSnapshot> { return publicShoppingSession(await getCommerceRepository().get(sessionId)); }
+
+export async function reconcileShoppingPayment(sessionId: string): Promise<ShoppingSessionSnapshot> {
+  const repository = getCommerceRepository();
+  const current = await repository.get(sessionId);
+  if (current.phase === "paid") return publicShoppingSession(current);
+  const checkout = current.checkout;
+  if (!checkout?.providerId || (current.phase !== "checkout_ready" && current.phase !== "payment_failed")) return publicShoppingSession(current);
+
+  const provider = await fetchPaymentLink(checkout.providerId);
+  const matchesCheckout = provider.id === checkout.providerId && provider.reference_id === checkout.referenceId && provider.amount === checkout.amountPaise;
+  if (!matchesCheckout) throw new CommerceServiceError("Razorpay returned payment details that do not match this order.", 409);
+  if (provider.status !== "paid") return publicShoppingSession(current);
+
+  const next = structuredClone(current);
+  next.checkout = { ...checkout, status: "paid", providerStatus: "paid", updatedAt: new Date().toISOString() };
+  next.messages.push(message("assistant", "Payment confirmed — your order is placed! 🎉"));
+  try {
+    await repository.saveCheckout(next.checkout);
+    return publicShoppingSession(await persist(current, next, "paid", [{
+      kind: "razorpay",
+      title: "Payment confirmed on checkout return",
+      detail: `Razorpay verified the exact ₹${Math.round(checkout.amountPaise / 100).toLocaleString("en-IN")} order after the shopper returned from payment.`,
+      actor: "razorpay",
+      status: "success",
+      evidence: { providerId: checkout.providerId, referenceId: checkout.referenceId, amountPaise: checkout.amountPaise, providerStatus: provider.status },
+    }]));
+  } catch (error) {
+    if (error instanceof RepositoryConflictError) {
+      const latest = await repository.get(sessionId);
+      if (latest.phase === "paid") return publicShoppingSession(latest);
+    }
+    throw error;
+  }
+}
 
 export async function sendShoppingMessage(sessionId: string, input: { text: string; expectedVersion: number; idempotencyKey: string; answerKey?: string; answerValue?: string }): Promise<ShoppingSessionSnapshot> {
   const repository = getCommerceRepository(); const current = await repository.get(sessionId);
   if (current.commandReceipts.some((item) => item.idempotencyKey === input.idempotencyKey)) return publicShoppingSession(current);
   requireVersion(current, input.expectedVersion);
   if (current.phase !== "discovering" && current.phase !== "agent_failure") throw new CommerceServiceError("Edit your criteria by starting a new search.");
-  const next = structuredClone(current); next.commandReceipts.push({ idempotencyKey: input.idempotencyKey, command: "send_message", version: current.version + 1, completedAt: new Date().toISOString() }); next.messages.push(message("user", input.text));
-  let profile = current.profile; let answerSource: "quick_choice" | "interpreted_answer" = "interpreted_answer"; const events: EventInput[] = [{ kind: "shopper", title: "Shopper answered a question", detail: "The response was processed without storing its raw text in the audit ledger.", actor: "shopper", status: "info", evidence: { activeQuestionKey: current.activeQuestionKey } }];
+  const next = structuredClone(current); next.commandReceipts.push({ idempotencyKey: input.idempotencyKey, command: "send_message", version: current.version + 1, completedAt: new Date().toISOString() });
+  const boundary = input.answerKey ? { kind: "continue" as const } : classifyShoppingMessage(current.profile, input.text, current.activeQuestionKey);
+  next.messages.push(message("user", boundary.kind === "sensitive_data" ? "[Sensitive information removed]" : input.text));
+  let profile = current.profile; let answerSource: "quick_choice" | "interpreted_answer" = "interpreted_answer"; const events: EventInput[] = [{ kind: "shopper", title: "Shopper message received", detail: "The message was handled without storing its raw text in the audit ledger.", actor: "shopper", status: "info", evidence: { activeQuestionKey: current.activeQuestionKey } }];
+  if (boundary.kind !== "continue") {
+    const previousAssistantText = [...current.messages].reverse().find((item) => item.role === "assistant")?.text;
+    next.messages.push(message("assistant", boundaryResponse(boundary, current, previousAssistantText)));
+    next.activeQuestionKey = current.activeQuestionKey;
+    events.push({ kind: "guardrail", title: boundary.kind === "sensitive_data" ? "Sensitive information removed" : boundary.kind === "unsupported_category" ? "Unsupported product explained" : boundary.kind === "multiple_categories" ? "One category requested" : boundary.kind === "greeting" ? "Greeting answered" : "Conversation kept on topic", detail: "Choosy responded with its current shopping scope and kept the active question unchanged.", actor: "system", status: boundary.kind === "sensitive_data" ? "blocked" : "info", evidence: { responseType: boundary.kind, supportedCategories: ["phones", "headphones", "running-shoes"], ...(boundary.kind === "unsupported_category" && boundary.requestedProduct ? { requestedProduct: boundary.requestedProduct } : {}) } });
+    return publicShoppingSession(await persist(current, next, "discovering", events));
+  }
   if (input.answerKey && input.answerValue) {
     answerSource = "quick_choice";
     if (input.answerKey !== current.activeQuestionKey) throw new CommerceServiceError("That answer no longer matches the active question.", 409);
@@ -61,7 +142,8 @@ export async function sendShoppingMessage(sessionId: string, input: { text: stri
       events.push(...result.toolEvents.map((tool): EventInput => ({ kind: "agent", title: tool.name, detail: tool.summary, actor: "agent", status: tool.status === "completed" ? "success" : "blocked", evidence: { mode: result.mode, extractionSource: result.extractionSource, durationMs: result.durationMs, inputDigest: result.inputDigest } })));
     } catch (error) {
       if (!(error instanceof ShoppingAgentUnavailableError)) throw error;
-      next.messages.push(message("assistant", "I didn’t understand that answer. Try saying it another way, or choose one of the options below.")); next.activeQuestionKey = current.activeQuestionKey;
+      const previousAssistantText = [...current.messages].reverse().find((item) => item.role === "assistant")?.text;
+      next.messages.push(message("assistant", unclearResponse(current, previousAssistantText))); next.activeQuestionKey = current.activeQuestionKey;
       return publicShoppingSession(await persist(current, next, "agent_failure", [...events, { kind: "guardrail", title: "Understanding stopped safely", detail: error.message, actor: "system", status: "blocked" }]));
     }
   }
@@ -74,7 +156,7 @@ export async function sendShoppingMessage(sessionId: string, input: { text: stri
   next.profile = profile;
   const pending = nextQuestion(profile);
   if (!pending && isProfileComplete(profile)) {
-    const catalog = await repository.getCatalog(); const recommendations = rankProducts(profile, catalog);
+    const catalog = await repository.getCatalog(); const { recommendations, brandFallback } = rankProducts(profile, catalog);
     if (!recommendations.length) {
       next.profile.confirmedKeys = next.profile.confirmedKeys.filter((key) => key !== "maxBudgetPaise"); next.activeQuestionKey = "maxBudgetPaise";
       next.messages.push(message("assistant", "I couldn’t find a current match for everything you asked for. Would you like to try a different budget?"));
@@ -82,8 +164,13 @@ export async function sendShoppingMessage(sessionId: string, input: { text: stri
       return publicShoppingSession(await persist(current, next, "discovering", events));
     }
     next.recommendations = recommendations; next.activeQuestionKey = null;
-    next.messages.push(message("assistant", `Thanks—that’s enough to work with. I found ${recommendations.length} available ${recommendations.length === 1 ? "match" : "matches"} within your budget.`));
-    events.push({ kind: "policy", title: "Enough preferences collected", detail: "Every required preference was answered directly or covered by an equivalent confirmed preference.", actor: "system", status: "success", evidence: { confirmedKeys: profile.confirmedKeys } }, { kind: "catalog", title: "Product matches created", detail: `${recommendations.length} available products met the shopper’s budget, preferences, and deal-breakers.`, actor: "system", status: "success", evidence: { productIds: recommendations.map((item) => item.productId), catalogVersion: CATALOG_VERSION } });
+    const brandNotice = brandFallback ? `I couldn’t find any ${profile.brandPreference} products that match your criteria, so here are the best alternatives from other brands. ` : "";
+    const topRecommendation = recommendations[0]!;
+    const topProduct = catalog.find((item) => item.id === topRecommendation.productId)!;
+    const topVariant = topProduct.variants.find((item) => item.id === topRecommendation.variantId)!;
+    const topReasons = topRecommendation.matchedNeeds.slice(0, 2).join(" and ").toLowerCase();
+    next.messages.push(message("assistant", `${brandNotice}I found ${recommendations.length} available ${recommendations.length === 1 ? "match" : "matches"} within your budget. My top pick is ${topProduct.name} at ₹${Math.round(topVariant.pricePaise / 100).toLocaleString("en-IN")} because it fits ${topReasons}. I also included a value pick and a strong alternative so you can compare.`));
+    events.push({ kind: "policy", title: "Enough preferences collected", detail: "Every required preference was answered directly or covered by an equivalent confirmed preference.", actor: "system", status: "success", evidence: { confirmedKeys: profile.confirmedKeys } }, { kind: "catalog", title: "Product matches created", detail: `${recommendations.length} available products met the shopper’s budget, preferences, and deal-breakers.`, actor: "system", status: "success", evidence: { productIds: recommendations.map((item) => item.productId), catalogVersion: CATALOG_VERSION, ...(brandFallback ? { brandFallback: true, requestedBrand: profile.brandPreference } : {}) } });
     return publicShoppingSession(await persist(current, next, "recommendations_ready", events));
   }
   next.activeQuestionKey = pending?.key ?? current.activeQuestionKey;
@@ -141,7 +228,7 @@ export async function executeShoppingCommand(sessionId: string, input: ShoppingC
     if ((current.phase !== "cart_review" && current.phase !== "needs_reselection") || !current.cart) throw new CommerceServiceError("There is no cart ready to confirm.");
     const validation = validateCart(current.cart, catalog);
     if (!validation.valid) {
-      next.recommendations = rankProducts(next.profile, catalog); next.selectedProductId = null; next.selectedVariantId = null; next.offeredAddonIds = []; next.cart = null; next.quote = null; next.checkout = null;
+      next.recommendations = rankProducts(next.profile, catalog).recommendations; next.selectedProductId = null; next.selectedVariantId = null; next.offeredAddonIds = []; next.cart = null; next.quote = null; next.checkout = null;
       next.messages.push(message("assistant", "That item just went out of stock, so I stopped checkout and refreshed your matches. Nothing was charged or substituted."));
       events.push({ kind: "inventory", title: "Unavailable item blocked at checkout", detail: "Fresh inventory did not match the confirmed cart, so no Razorpay intent was created.", actor: "system", status: "blocked", evidence: validation });
       return publicShoppingSession(await persist(current, next, "needs_reselection", events));
@@ -153,7 +240,7 @@ export async function executeShoppingCommand(sessionId: string, input: ShoppingC
   if (input.command === "create_checkout" || input.command === "retry_payment") {
     if (!current.cart?.confirmedAt || !current.quote) throw new CommerceServiceError("Confirm the current cart before checkout.");
     if (new Date(current.quote.expiresAt).getTime() <= Date.now()) throw new CommerceServiceError("The quote expired. Confirm the cart again.");
-    const validation = validateCart(current.cart, catalog); if (!validation.valid) { next.recommendations = rankProducts(next.profile, catalog); next.selectedProductId = null; next.selectedVariantId = null; next.cart = null; next.quote = null; next.checkout = null; next.messages.push(message("assistant", "Something changed before checkout, so I stopped and refreshed your matches. Nothing was charged.")); return publicShoppingSession(await persist(current, next, "needs_reselection", [{ kind: "inventory", title: "Checkout stopped before provider call", detail: "The cart failed final stock or price validation. No Razorpay action was created.", actor: "system", status: "blocked", evidence: validation }])); }
+    const validation = validateCart(current.cart, catalog); if (!validation.valid) { next.recommendations = rankProducts(next.profile, catalog).recommendations; next.selectedProductId = null; next.selectedVariantId = null; next.cart = null; next.quote = null; next.checkout = null; next.messages.push(message("assistant", "Something changed before checkout, so I stopped and refreshed your matches. Nothing was charged.")); return publicShoppingSession(await persist(current, next, "needs_reselection", [{ kind: "inventory", title: "Checkout stopped before provider call", detail: "The cart failed final stock or price validation. No Razorpay action was created.", actor: "system", status: "blocked", evidence: validation }])); }
     const action = checkoutIntent(current.id, current.quote, input.idempotencyKey); await repository.saveCheckout(action);
     let external; try { external = await createOrReconcileCheckout(action, options.paymentReturnUrl); } catch (error) { external = { ...action, status: "failed" as const, failureReason: error instanceof Error ? error.message : "Razorpay checkout failed.", updatedAt: new Date().toISOString() }; }
     await repository.saveCheckout(external); next.checkout = external;

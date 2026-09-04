@@ -6,7 +6,7 @@ import { allQuestions } from "@/lib/commerce-policy";
 import type { AgentEvidence, AgentTurnResult, PreferenceProfile, ProductCategory } from "@/lib/types";
 
 export const SHOPPING_AGENT_MODEL = "gemini-3.5-flash-lite";
-export const SHOPPING_PROMPT_VERSION = "choosy-discovery-v1";
+export const SHOPPING_PROMPT_VERSION = "choosy-discovery-v2";
 const GEMINI_OPENAI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/";
 const RUN_TIMEOUT_MS = 8_000;
 const DETERMINISTIC_MODEL = "choosy-parser-v1";
@@ -15,6 +15,66 @@ const localCache = new Map<string, AgentTurnResult>();
 
 export class ShoppingAgentUnavailableError extends Error {
   constructor(message = "Choosy could not understand that answer safely. Please retry.") { super(message); }
+}
+
+export type ShoppingMessageBoundary =
+  | { kind: "continue" }
+  | { kind: "greeting" }
+  | { kind: "unsupported_category"; requestedProduct?: string }
+  | { kind: "multiple_categories"; categories: ProductCategory[] }
+  | { kind: "off_topic" }
+  | { kind: "sensitive_data" };
+
+const categoryPatterns: Array<[ProductCategory, RegExp]> = [
+  ["phones", /\b(phones?|smartphones?|mobiles?)\b/i],
+  ["headphones", /\b(headphones?|headsets?|earbuds?|earphones?)\b/i],
+  ["running-shoes", /\b(running\s+shoes?|running\s+sneakers?|trainers?|jogging\s+shoes?)\b/i],
+];
+
+const unsupportedProductPattern = /\b(laptops?|computers?|desktops?|tablets?|ipads?|televisions?|tvs?|cameras?|smartwatches?|watches?|speakers?|keyboards?|mice|monitors?|printers?|consoles?|refrigerators?|fridges?|washing\s+machines?|microwaves?|cars?|bikes?|bicycles?|books?|furniture|clothes?|shirts?|dresses?|formal\s+shoes?|sandals?|boots?|groceries|makeup|cosmetics?|toothbrush(?:es)?)\b/i;
+const shoppingIntentPattern = /\b(buy|purchase|shop(?:ping)?|need|want|find|looking\s+for|recommend|suggest|compare|best)\b/i;
+const categorySwitchPattern = /\b(actually|instead|switch|change|rather|looking\s+for|shopping\s+for|want|need|buy)\b/i;
+const greetingPattern = /^(?:hi|hello|hey|hiya|good\s+(?:morning|afternoon|evening)|namaste)[\s!,.?]*$/i;
+const offTopicPattern = /\b(?:tell\s+me\s+a\s+joke|weather|news|homework|write\s+(?:my|some)\s+code|system\s+prompt|ignore\s+(?:all\s+)?(?:previous|earlier)\s+instructions?|reveal\s+(?:your|the)\s+(?:prompt|instructions?))\b/i;
+const sensitiveDataPatterns = [
+  /\b(?:\d[ -]*?){13,19}\b/,
+  /\b(?:cvv|cvc|card\s+number|debit\s+card|credit\s+card|expiry|expiration)\b/i,
+  /\b[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}\b/i,
+  /\b(?:my\s+)?(?:address|upi\s*id|pin|password|otp)\s+(?:is|:)\s*\S+/i,
+  /(?:\+?91[ -]?)?[6-9]\d{9}\b/,
+];
+
+function mentionedCategories(message: string): ProductCategory[] {
+  const categories = categoryPatterns.filter(([, pattern]) => pattern.test(message)).map(([category]) => category);
+  if (categories.includes("phones") && categories.includes("headphones") && /\b(?:headphones?|headsets?|earbuds?|earphones?)\s+(?:for|with)\s+(?:my\s+)?(?:phone|smartphone|mobile)\b/i.test(message)) {
+    return categories.filter((category) => category !== "phones");
+  }
+  return categories;
+}
+
+/**
+ * Handles predictable conversation boundaries before any model call. This
+ * keeps unsupported requests honest and prevents likely secrets from being
+ * persisted or sent to an external model.
+ */
+export function classifyShoppingMessage(profile: PreferenceProfile, message: string, activeQuestionKey: string | null): ShoppingMessageBoundary {
+  const clean = message.trim();
+  if (sensitiveDataPatterns.some((pattern) => pattern.test(clean))) return { kind: "sensitive_data" };
+
+  const categories = mentionedCategories(clean);
+  const choosingCategory = activeQuestionKey === "category" || !profile.category;
+  const switchingCategory = Boolean(profile.category && categorySwitchPattern.test(clean));
+  if (categories.length > 1 && (choosingCategory || switchingCategory)) return { kind: "multiple_categories", categories };
+  if (categories.length === 1) return { kind: "continue" };
+
+  if (greetingPattern.test(clean)) return { kind: "greeting" };
+  if (offTopicPattern.test(clean)) return { kind: "off_topic" };
+
+  const unsupported = clean.match(unsupportedProductPattern)?.[0];
+  if ((choosingCategory && (unsupported || shoppingIntentPattern.test(clean))) || (unsupported && switchingCategory)) {
+    return { kind: "unsupported_category", ...(unsupported ? { requestedProduct: unsupported.toLowerCase() } : {}) };
+  }
+  return { kind: "continue" };
 }
 
 function stableJson(value: unknown): string {
@@ -70,27 +130,32 @@ function canonicalMatch(message: string, values: Array<[string, RegExp]>): strin
   return values.find(([, pattern]) => pattern.test(message))?.[0] ?? null;
 }
 
-function extractBudgetPaise(message: string): number | null {
-  const match = message.match(/(?:₹|\brs\.?|\binr\b|\bunder\b|\bbudget(?:\s+of)?\b|\bup\s*to\b|\bmax(?:imum)?\b)\s*([0-9][0-9,]*(?:\.[0-9]+)?)\s*(k|thousand|lakh|lac)?/i)
-    ?? message.match(/\b([0-9]+(?:\.[0-9]+)?)\s*(k|thousand|lakh|lac)\b/i);
+function normalized(value: string): string {
+  return value.trim().toLowerCase().replace(/[–—]/g, "-").replace(/\s+/g, " ");
+}
+
+function extractBudgetPaise(message: string, allowBareAmount = false): number | null {
+  const match = message.match(/(?:₹|\brs\.?|\binr\b|\bunder\b|\bbudget(?:\s+of)?\b|\bup\s*to\b|\bmax(?:imum)?\b)\s*([0-9][0-9,]*(?:\.[0-9]+)?)\s*(k|thousand|lakh|lac|l)?/i)
+    ?? message.match(/\b([0-9]+(?:\.[0-9]+)?)\s*(k|thousand|lakh|lac|l)\b/i)
+    ?? (allowBareAmount ? message.trim().match(/^([0-9][0-9,]*(?:\.[0-9]+)?)$/) : null);
   if (!match) return null;
   const amount = Number(match[1]!.replaceAll(",", ""));
   const unit = match[2]?.toLowerCase();
-  const multiplier = unit === "k" || unit === "thousand" ? 1_000 : unit === "lakh" || unit === "lac" ? 100_000 : 1;
+  const multiplier = unit === "k" || unit === "thousand" ? 1_000 : unit === "lakh" || unit === "lac" || unit === "l" ? 100_000 : 1;
   const rupees = Math.round(amount * multiplier);
   return Number.isFinite(rupees) && rupees > 0 && rupees <= 500_000 ? rupees * 100 : null;
 }
 
-export function extractDeterministicPreferences(profile: PreferenceProfile, message: string): { profile: PreferenceProfile; confirmedKeys: string[] } {
+export function extractDeterministicPreferences(profile: PreferenceProfile, message: string, activeQuestionKey: string | null = null): { profile: PreferenceProfile; confirmedKeys: string[] } {
   let next = structuredClone(profile);
   const confirmedKeys: string[] = [];
   const accept = (key: string, value: string) => { next = applyStructuredAnswer(next, key, value); confirmedKeys.push(key); };
   const lower = message.toLowerCase();
   const category = canonicalMatch(lower, [
-    ["Phone", /\b(phone|smartphone|mobile)\b/], ["Headphones", /\b(headphones?|headsets?|earbuds?|earphones?)\b/], ["Running shoes", /\b(running\s+shoes?|trainers?|jogging\s+shoes?)\b/],
+    ["Phone", categoryPatterns[0]![1]], ["Headphones", categoryPatterns[1]![1]], ["Running shoes", categoryPatterns[2]![1]],
   ]);
   if (!profile.confirmedKeys.includes("category") && category) accept("category", category);
-  const budget = extractBudgetPaise(message);
+  const budget = extractBudgetPaise(message, activeQuestionKey === "maxBudgetPaise");
   if (!profile.confirmedKeys.includes("maxBudgetPaise") && budget) { next.maxBudgetPaise = budget; next.confirmedKeys.push("maxBudgetPaise"); confirmedKeys.push("maxBudgetPaise"); }
   const useCase = canonicalMatch(lower, [
     ["Photography", /\b(photo(?:graphy)?|camera|portraits?)\b/], ["Gaming", /\b(gam(?:e|ing)|esports?)\b/], ["Travel", /\b(travel|commut(?:e|ing)|flight)\b/], ["Fitness", /\b(fitness|workout|gym|running|training)\b/], ["Work", /\b(work|office|meetings?|calls?)\b/], ["Everyday", /\b(everyday|daily|general use)\b/],
@@ -119,6 +184,9 @@ export function extractDeterministicPreferences(profile: PreferenceProfile, mess
       if (choice) accept(question.key, choice);
     }
   }
+  const activeQuestion = allQuestions(next).find((question) => question.key === activeQuestionKey);
+  const typedChoice = activeQuestion?.choices.find((choice) => normalized(choice) === normalized(message));
+  if (activeQuestion && typedChoice && !next.confirmedKeys.includes(activeQuestion.key)) accept(activeQuestion.key, typedChoice);
   return { profile: next, confirmedKeys: [...new Set(confirmedKeys)] };
 }
 
@@ -147,7 +215,7 @@ export async function understandShoppingMessage(input: { profile: PreferenceProf
   const startedAt = Date.now();
   const inputDigest = discoveryInputDigest(input.profile, input.message, input.activeQuestionKey);
   const cached = input.cached ?? localCache.get(inputDigest);
-  const deterministic = extractDeterministicPreferences(input.profile, input.message);
+  const deterministic = extractDeterministicPreferences(input.profile, input.message, input.activeQuestionKey);
   const deterministicResolvedActive = Boolean(input.activeQuestionKey && deterministic.confirmedKeys.includes(input.activeQuestionKey));
   const deterministicOutput = (): AgentTurnResult => ({
     mode: "deterministic", model: DETERMINISTIC_MODEL, inputDigest, promptVersion: SHOPPING_PROMPT_VERSION, catalogVersion: CATALOG_VERSION,

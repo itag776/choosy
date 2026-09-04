@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import "./globals.css";
 import "./choosy.css";
+import "./shopper-modern.css";
 import "./proof.css";
 import "./api-page.css";
 

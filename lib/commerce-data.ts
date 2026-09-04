@@ -2,9 +2,14 @@ import { randomUUID } from "node:crypto";
 import { CATALOG_VERSION } from "@/lib/catalog";
 import { createCommerceAuditEvent } from "@/lib/commerce-audit";
 import { emptyPreferenceProfile, nextQuestion } from "@/lib/commerce-policy";
-import type { ShoppingSessionSnapshot } from "@/lib/types";
+import type { OperatorIdentity, ShoppingSessionSnapshot } from "@/lib/types";
 
 export const DEFAULT_MERCHANT_ID = "merchant_choosy_demo";
+export const DEMO_MERCHANT_OPERATOR: OperatorIdentity = {
+  actorId: "merchant_demo",
+  role: "operator",
+  merchantId: DEFAULT_MERCHANT_ID,
+};
 
 export function createShoppingSession(now = new Date(), sessionId = `shop_${randomUUID().replaceAll("-", "").slice(0, 24)}`): ShoppingSessionSnapshot {
   const createdAt = now.toISOString();

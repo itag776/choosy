@@ -10,5 +10,6 @@ export default defineConfig({
   test: {
     environment: "node",
     restoreMocks: true,
+    exclude: ["tests/e2e/**", "node_modules/**"],
   },
 });

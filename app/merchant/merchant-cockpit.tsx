@@ -1,89 +1,113 @@
 "use client";
-/* eslint-disable @next/next/no-html-link-for-pages */
+
+import Link from "next/link";
 import { useMemo, useState } from "react";
-import {
-  Activity, AlertTriangle, ArrowLeft, Check, Download, ExternalLink, LogOut, PackageX,
-  RefreshCw, ShieldCheck, Sparkles, WalletCards,
-} from "lucide-react";
+import { AlertTriangle, ArrowLeft, CheckCircle2, ChevronDown, Download, Package, RefreshCw, ShieldCheck, ShoppingBag, WalletCards } from "lucide-react";
 import { DEMO_CATALOG } from "@/lib/catalog";
-import type { GrowthBenchmarkReport, MerchantDashboard, OperatorIdentity } from "@/lib/types";
+import type { GrowthBenchmarkReport, MerchantDashboard } from "@/lib/types";
+import styles from "./merchant.module.css";
 
 function percent(value: number): string { return `${Math.round(value * 100)}%`; }
 function inr(value: number): string { return `₹${Math.round(value / 100).toLocaleString("en-IN")}`; }
 function productName(id: string | null): string { return DEMO_CATALOG.find((item) => item.id === id)?.name ?? "No product selected"; }
-function actorLabel(actor: string): string { return ({ shopper: "Shopper", agent: "Choosy", buyer_agent: "AI purchase demo", system: "Choosy", merchant: "Merchant", razorpay: "Razorpay" } as Record<string, string>)[actor] ?? actor; }
+function actorLabel(actor: string): string { return ({ shopper: "Shopper", agent: "Choosy", buyer_agent: "AI buyer", system: "Choosy", merchant: "Merchant", razorpay: "Razorpay" } as Record<string, string>)[actor] ?? actor; }
+function phaseLabel(phase: string): string { return phase.replaceAll("_", " "); }
+function journeyName(session: MerchantDashboard["sessions"][number]): string {
+  if (session.selectedProductId) return productName(session.selectedProductId);
+  if (session.phase === "needs_reselection") return "New selection needed";
+  if (session.recommendations.length) return `${session.recommendations.length} recommendations ready`;
+  return "Preferences in progress";
+}
 
-export default function MerchantCockpit({ initialDashboard, operator, benchmark }: {
-  initialDashboard: MerchantDashboard;
-  operator: OperatorIdentity;
-  benchmark: GrowthBenchmarkReport;
-}) {
+export default function MerchantCockpit({ initialDashboard, benchmark }: { initialDashboard: MerchantDashboard; benchmark: GrowthBenchmarkReport; }) {
   const [dashboard, setDashboard] = useState(initialDashboard);
   const [selectedId, setSelectedId] = useState(initialDashboard.sessions[0]?.id ?? null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [actionFilter, setActionFilter] = useState("all");
   const [outcomeFilter, setOutcomeFilter] = useState("all");
   const [showTechnical, setShowTechnical] = useState(false);
   const selected = useMemo(() => dashboard.sessions.find((item) => item.id === selectedId) ?? dashboard.sessions[0], [dashboard, selectedId]);
-  const filteredAudit = useMemo(() => selected?.audit.filter((event) => (actionFilter === "all" || event.kind === actionFilter) && (outcomeFilter === "all" || event.status === outcomeFilter)) ?? [], [selected, actionFilter, outcomeFilter]);
+  const filteredAudit = useMemo(() => selected?.audit.filter((event) => outcomeFilter === "all" || event.status === outcomeFilter) ?? [], [selected, outcomeFilter]);
   const integrity = selected ? dashboard.auditIntegrity[selected.id] : undefined;
-  const integrityMessage = integrity?.verified
-    ? integrity.source === "supabase_ledger"
-      ? `${integrity.eventCount} events in the correct order. Nothing is missing or changed.`
-      : `${integrity.eventCount} local events pass the integrity check. Durable append-only storage requires the production Supabase ledger.`
-    : integrity?.issue ?? "The ledger could not be verified.";
+  const metrics = dashboard.metrics;
 
   async function refresh() {
-    setBusy(true);
-    const response = await fetch("/api/merchant/dashboard");
-    const result = await response.json() as MerchantDashboard & { error?: string };
-    if (response.ok) setDashboard(result); else setError(result.error ?? "Refresh failed.");
-    setBusy(false);
+    setBusy(true); setError(null);
+    try {
+      const response = await fetch("/api/merchant/dashboard");
+      const result = await response.json() as MerchantDashboard & { error?: string };
+      if (!response.ok) throw new Error(result.error ?? "Refresh failed.");
+      setDashboard(result);
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "Refresh failed."); }
+    finally { setBusy(false); }
   }
-  async function makeUnavailable() {
+
+  async function updateInventory(action: "mark_selected_unavailable" | "restore_demo_inventory") {
     if (!selected) return;
     setBusy(true); setError(null);
-    const response = await fetch("/api/merchant/inventory", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sessionId: selected.id, action: "mark_selected_unavailable" }) });
-    const result = await response.json() as { error?: string };
-    if (!response.ok) setError(result.error ?? "Inventory action failed.");
-    await refresh(); setBusy(false);
+    try {
+      const response = await fetch("/api/merchant/inventory", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sessionId: selected.id, action }) });
+      const result = await response.json() as { error?: string };
+      if (!response.ok) throw new Error(result.error ?? "Inventory update failed.");
+      const dashboardResponse = await fetch("/api/merchant/dashboard");
+      const nextDashboard = await dashboardResponse.json() as MerchantDashboard & { error?: string };
+      if (!dashboardResponse.ok) throw new Error(nextDashboard.error ?? "Refresh failed.");
+      setDashboard(nextDashboard);
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "Inventory update failed."); }
+    finally { setBusy(false); }
   }
-  async function restoreInventory() {
-    if (!selected) return;
-    setBusy(true); setError(null);
-    const response = await fetch("/api/merchant/inventory", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sessionId: selected.id, action: "restore_demo_inventory" }) });
-    const result = await response.json() as { error?: string };
-    if (!response.ok) setError(result.error ?? "Inventory restore failed.");
-    await refresh(); setBusy(false);
-  }
-  async function logout() { await fetch("/api/auth/logout", { method: "POST" }); window.location.reload(); }
+
   function downloadAudit() {
     if (!selected || !integrity?.verified) return;
     const blob = new Blob([JSON.stringify({ sessionId: selected.id, integrity, events: selected.audit }, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob); const link = document.createElement("a"); link.href = url; link.download = `choosy-audit-${selected.id}.json`; link.click(); URL.revokeObjectURL(url);
   }
-  const metrics = dashboard.metrics;
 
-  return <main className="cockpit">
-    <header className="cockpit-header"><div><a className="wordmark light" href="/">choosy</a><span>Merchant dashboard</span></div><nav><a href="/"><ArrowLeft size={14}/>Shop</a><span>{operator.actorId}</span><button onClick={logout}><LogOut size={14}/>Sign out</button></nav></header>
-    <section className="cockpit-hero"><div><p className="eyebrow"><Sparkles size={14}/> Merchant dashboard</p><h1>See what happened,<br/><em>step by step.</em></h1><p>Review demo shopping sessions, payments, and the verified history behind every action.</p><p><a href="/agent-buyer">AI purchase demo</a> · <a href="/evidence">How we test</a></p></div><details className="system-status"><summary>System status</summary><div className="integration-row">{Object.entries(dashboard.integration).map(([key, value]) => <span key={key}><i className={value ? "on" : ""}/>{key}<b>{String(value).replace("_", " ")}</b></span>)}</div></details></section>
-    <section className="benchmark-banner"><div><p className="eyebrow">Test results</p><strong>{benchmark.choosy.completedPurchases}/{benchmark.datasetSize} successful baskets</strong><span>Fixed scenarios, separate from live demo activity</span></div><a href="/evidence">See how we test <ExternalLink size={13}/></a><span className={dashboard.auditChainsValid ? "chain-ok" : "chain-bad"}>{dashboard.auditChainsValid ? <ShieldCheck size={14}/> : <AlertTriangle size={14}/>} {dashboard.auditChainsValid ? "All audits verified" : "Audit problem detected"}</span></section>
-    <section className="metric-grid"><article><Activity/><span>Sessions</span><strong>{metrics.totalSessions}</strong><small>Demo shopping journeys</small></article><article><Sparkles/><span>Received matches</span><strong>{percent(metrics.recommendationRate)}</strong><small>Reached product suggestions</small></article><article><WalletCards/><span>Reached checkout</span><strong>{percent(metrics.checkoutRate)}</strong><small>Razorpay checkout created</small></article><article><Check/><span>Test payments</span><strong>{inr(metrics.paidTestModePaise)}</strong><small>Razorpay Test Mode only</small></article></section>
-    <section className="cockpit-grid">
-      <aside className="session-list"><header><div><p className="eyebrow">Recent activity</p><h2>Customer journeys</h2></div><button aria-label="Refresh sessions" onClick={refresh} disabled={busy}><RefreshCw className={busy ? "spin" : ""} size={15}/></button></header>{dashboard.sessions.length === 0 && <div className="empty-list">Start a shopping session to see its history here.</div>}{dashboard.sessions.map((session) => <button key={session.id} className={selected?.id === session.id ? "active" : ""} onClick={() => setSelectedId(session.id)}><span><i/>{session.phase.replaceAll("_", " ")}</span><strong>{productName(session.selectedProductId)}</strong><small>{session.profile.category?.replace("-", " ") ?? "Learning what they need"} · {session.audit.length} events</small></button>)}</aside>
-      <div className="audit-panel">
-        <header><div><p className="eyebrow">Complete history</p><h2>Audit trail</h2></div>{selected && <div className="audit-filter"><select aria-label="Filter by action type" value={actionFilter} onChange={(event) => setActionFilter(event.target.value)}><option value="all">All actions</option><option value="session">Session</option><option value="shopper">Shopping choices</option><option value="agent">Choosy activity</option><option value="catalog">Product matches</option><option value="policy">Safeguards</option><option value="cart">Cart</option><option value="inventory">Price and stock</option><option value="razorpay">Payments</option><option value="webhook">Payment updates</option><option value="guardrail">Stopped actions</option></select><select aria-label="Filter by outcome" value={outcomeFilter} onChange={(event) => setOutcomeFilter(event.target.value)}><option value="all">All outcomes</option><option value="info">Information</option><option value="success">Successful</option><option value="warning">Warning</option><option value="blocked">Blocked</option></select><button className={showTechnical ? "active" : ""} onClick={()=>setShowTechnical((value)=>!value)}>Technical details</button><button aria-label="Download verified audit" disabled={!integrity?.verified} onClick={downloadAudit}><Download size={14}/></button></div>}</header>
-        {selected ? <>
-          <div className={`audit-integrity ${integrity?.verified ? "verified" : "failed"}`}>{integrity?.verified ? <ShieldCheck size={18}/> : <AlertTriangle size={18}/>}<div><b>{integrity?.verified ? "Audit verified" : "Audit problem detected"}</b><span>{integrityMessage}</span></div></div>
-          <div className="session-summary"><div><span>Phase</span><b>{selected.phase.replaceAll("_", " ")}</b></div><div><span>Origin</span><b>{(selected.origin ?? "shopper_ui").replaceAll("_", " ")}</b></div><div><span>Selected</span><b>{productName(selected.selectedProductId)}</b></div><div><span>Cart</span><b>{selected.cart ? inr(selected.cart.totalPaise) : "Not built"}</b></div></div>
-          {selected.checkout && <section className="payment-proof"><header><span><ShieldCheck size={14}/>Payment summary</span><b>{selected.checkout.status}</b></header><dl><div><dt>Amount</dt><dd>{inr(selected.checkout.amountPaise)}</dd></div><div><dt>Razorpay ID</dt><dd>{selected.checkout.providerId ?? "Waiting for Razorpay"}</dd></div>{showTechnical&&<><div><dt>Reference</dt><dd>{selected.checkout.referenceId}</dd></div><div><dt>Cart fingerprint</dt><dd>{selected.checkout.cartDigest}</dd></div><div><dt>Quote fingerprint</dt><dd>{selected.checkout.quoteDigest}</dd></div>{selected.buyerRunId && <div><dt>Plan ID</dt><dd>{selected.buyerRunId}</dd></div>}</>}</dl></section>}
-          <section className="demo-control"><div><PackageX/><span><b>Demo inventory controls</b><small>Test what happens when a selected item goes out of stock before checkout.</small></span></div><div><button disabled={busy || !selected.selectedVariantId || selected.phase === "paid"} onClick={makeUnavailable}>Mark unavailable</button><button disabled={busy} onClick={restoreInventory}>Restore stock</button></div></section>
-          {error && <p className="form-error">{error}</p>}
-          <div className="audit-list">{filteredAudit.map((event) => <details className="audit-event" key={event.id}><summary><span className={`audit-icon ${event.status}`}>{event.status === "blocked" ? <AlertTriangle size={15}/> : <ShieldCheck size={15}/>}</span><span className="audit-sequence">#{event.sequence}</span><span className="audit-title"><b>{event.title}</b><small>{actorLabel(event.actor)} · <span className={`audit-outcome ${event.status}`}>{event.status}</span></small></span><time>{new Date(event.createdAt).toLocaleString([], { dateStyle: "medium", timeStyle: "long" })}</time></summary><div className="audit-body"><p>{event.detail}</p>{showTechnical&&<div className="audit-technical"><dl><div><dt>Event type</dt><dd>{event.kind}</dd></div><div><dt>Schema version</dt><dd>{event.schemaVersion ?? "Legacy event"}</dd></div><div><dt>Session version</dt><dd>{event.sessionVersion ?? "Legacy event"}</dd></div><div><dt>Previous hash</dt><dd>{event.previousHash}</dd></div><div><dt>Current hash</dt><dd>{event.hash}</dd></div></dl>{event.evidence&&<><b>Evidence</b><pre>{JSON.stringify(event.evidence,null,2)}</pre></>}</div>}</div></details>)}</div>
-        </> : <div className="empty-audit"><ShieldCheck/><h3>No journey selected</h3><p>Choose a journey to see its full history.</p></div>}
-      </div>
-    </section>
-    <footer className="cockpit-footer"><span>Choosy merchant dashboard</span><a href="/agent-api">For developers <ExternalLink size={13}/></a></footer>
+  return <main className={styles.dashboard}>
+    <header className={styles.topbar}>
+      <Link className={styles.brand} href="/" aria-label="Choosy home">choosy</Link>
+      <div className={styles.topbarActions}><Link className={styles.textLink} href="/"><ArrowLeft size={16}/> Store</Link></div>
+    </header>
+
+    <div className={styles.page}>
+      <section className={styles.pageHeader}><div><p className={styles.kicker}>Merchant dashboard</p><h1>Good to see you.</h1><p>Here&apos;s what&apos;s happening with your store today.</p></div><button className={styles.primaryButton} onClick={refresh} disabled={busy}><RefreshCw className={busy ? styles.spin : ""} size={16}/> Refresh</button></section>
+      {error && <div className={styles.error}><AlertTriangle size={17}/>{error}</div>}
+
+      <section className={styles.metrics} aria-label="Store summary">
+        <article><span className={styles.metricIcon}><ShoppingBag size={19}/></span><div><p>Shopping sessions</p><strong>{metrics.totalSessions}</strong><small>Customer journeys</small></div></article>
+        <article><span className={styles.metricIcon}><CheckCircle2 size={19}/></span><div><p>Found a match</p><strong>{percent(metrics.recommendationRate)}</strong><small>Reached recommendations</small></div></article>
+        <article><span className={styles.metricIcon}><WalletCards size={19}/></span><div><p>Reached checkout</p><strong>{percent(metrics.checkoutRate)}</strong><small>Checkout created</small></div></article>
+        <article><span className={styles.metricIcon}><ShieldCheck size={19}/></span><div><p>Test payments</p><strong>{inr(metrics.paidTestModePaise)}</strong><small>Razorpay test mode</small></div></article>
+      </section>
+
+      <section className={styles.workspace}>
+        <aside className={styles.journeys}>
+          <div className={styles.sectionHeading}><div><p className={styles.kicker}>Recent activity</p><h2>Customer journeys</h2></div><span>{dashboard.sessions.length}</span></div>
+          <div className={styles.journeyList}>
+            {dashboard.sessions.length === 0 && <p className={styles.empty}>New shopping sessions will appear here.</p>}
+            {dashboard.sessions.map((session) => <button key={session.id} className={selected?.id === session.id ? styles.selectedJourney : ""} onClick={() => setSelectedId(session.id)}><span className={styles.journeyTopline}><span className={styles.statusDot}/>{phaseLabel(session.phase)}</span><strong>{journeyName(session)}</strong><small>{session.profile.category?.replace("-", " ") ?? "Exploring products"}</small></button>)}
+          </div>
+        </aside>
+
+        <section className={styles.detail}>
+          {!selected ? <div className={styles.emptyDetail}><ShoppingBag size={24}/><h2>No journey selected</h2><p>Choose a customer journey to view it.</p></div> : <>
+            <header className={styles.detailHeader}><div><p className={styles.kicker}>Selected journey</p><h2>{journeyName(selected)}</h2></div><span className={styles.phaseBadge}><span className={styles.statusDot}/>{phaseLabel(selected.phase)}</span></header>
+            <div className={styles.summaryRow}><div><span>Cart value</span><strong>{selected.cart ? inr(selected.cart.totalPaise) : "Not created"}</strong></div><div><span>Started from</span><strong>{phaseLabel(selected.origin ?? "shopper_ui")}</strong></div><div><span>Activity</span><strong>{selected.audit.length} events</strong></div><div><span>Demo checks</span><strong>{benchmark.choosy.completedPurchases}/{benchmark.datasetSize} passed</strong></div></div>
+            <div className={integrity?.verified ? styles.integrity : styles.integrityWarning}>{integrity?.verified ? <ShieldCheck size={18}/> : <AlertTriangle size={18}/>}<div><strong>{integrity?.verified ? "Activity verified" : "Activity needs attention"}</strong><span>{integrity?.verified ? `${integrity.eventCount} events are complete and in order.` : integrity?.issue ?? "The activity history could not be verified."}</span></div></div>
+            {selected.checkout && <section className={styles.paymentCard}><span className={styles.paymentIcon}><WalletCards size={20}/></span><div><span>Payment</span><strong>{inr(selected.checkout.amountPaise)}</strong><small>{selected.checkout.providerId ?? "Waiting for Razorpay"}</small></div><span className={styles.paymentStatus}>{selected.checkout.status}</span></section>}
+
+            <section className={styles.activitySection}>
+              <div className={styles.activityHeader}><div><p className={styles.kicker}>History</p><h3>Activity</h3></div><div className={styles.filters}><label><span className={styles.srOnly}>Filter activity</span><select value={outcomeFilter} onChange={(event) => setOutcomeFilter(event.target.value)}><option value="all">All activity</option><option value="success">Successful</option><option value="warning">Warnings</option><option value="blocked">Blocked</option><option value="info">Information</option></select><ChevronDown size={14}/></label><button className={styles.secondaryButton} onClick={() => setShowTechnical((value) => !value)}>{showTechnical ? "Hide details" : "Technical details"}</button><button className={styles.iconButtonLight} onClick={downloadAudit} disabled={!integrity?.verified} aria-label="Download verified activity"><Download size={16}/></button></div></div>
+              <div className={styles.timeline}>
+                {filteredAudit.map((event) => <details className={styles.event} key={event.id}><summary><span className={`${styles.eventIcon} ${event.status === "blocked" || event.status === "warning" ? styles.eventAlert : ""}`}>{event.status === "blocked" || event.status === "warning" ? <AlertTriangle size={15}/> : <CheckCircle2 size={15}/>}</span><span className={styles.eventCopy}><strong>{event.title}</strong><small>{actorLabel(event.actor)} · {event.status}</small></span><time>{new Date(event.createdAt).toLocaleDateString([], { day: "numeric", month: "short" })}</time><ChevronDown className={styles.chevron} size={16}/></summary><div className={styles.eventBody}><p>{event.detail}</p>{showTechnical && <dl className={styles.technical}><div><dt>Event type</dt><dd>{event.kind}</dd></div><div><dt>Sequence</dt><dd>#{event.sequence}</dd></div><div><dt>Hash</dt><dd>{event.hash}</dd></div></dl>}</div></details>)}
+                {filteredAudit.length === 0 && <p className={styles.empty}>No activity matches this filter.</p>}
+              </div>
+            </section>
+
+            <details className={styles.inventoryTools}><summary><span><Package size={17}/> Demo inventory tools</span><ChevronDown size={16}/></summary><div><p>Test what happens when an item goes out of stock before checkout.</p><span><button disabled={busy || !selected.selectedVariantId || selected.phase === "paid"} onClick={() => updateInventory("mark_selected_unavailable")}>Mark unavailable</button><button disabled={busy} onClick={() => updateInventory("restore_demo_inventory")}>Restore stock</button></span></div></details>
+          </>}
+        </section>
+      </section>
+    </div>
   </main>;
 }

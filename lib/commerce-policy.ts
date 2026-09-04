@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { categoryProfile, CATALOG_VERSION } from "@/lib/catalog";
-import type { Cart, CartItem, PreferenceProfile, Product, ProductCategory, ProductVariant, QuestionDefinition, Quote, Recommendation } from "@/lib/types";
+import type { Cart, CartItem, PreferenceProfile, Product, ProductCategory, ProductVariant, QuestionDefinition, Quote, Recommendation, RankResult } from "@/lib/types";
 
 export interface NextQuestion extends QuestionDefinition { scope: "universal" | "category"; }
 
@@ -20,9 +20,9 @@ export function emptyPreferenceProfile(): PreferenceProfile {
 
 const universalQuestions: NextQuestion[] = [
   { key: "category", prompt: "What are you shopping for?", choices: ["Phone", "Headphones", "Running shoes"], required: true, weight: 0, scope: "universal" },
-  { key: "maxBudgetPaise", prompt: "What’s your maximum budget?", choices: ["₹5,000", "₹10,000", "₹25,000", "₹50,000", "₹70,000", "₹1,00,000"], required: true, weight: 20, scope: "universal" },
+  { key: "maxBudgetPaise", prompt: "What’s your maximum budget?", choices: ["₹5,000", "₹10,000", "₹25,000", "₹50,000", "₹70,000", "₹1,00,000", "₹1,50,000"], required: true, weight: 20, scope: "universal" },
   { key: "useCase", prompt: "What will you use it for most?", choices: ["Everyday", "Work", "Travel", "Fitness", "Gaming", "Photography"], required: true, weight: 18, scope: "universal" },
-  { key: "brandPreference", prompt: "Do you have a preferred brand?", choices: ["No preference", "iQOO", "OnePlus", "Nothing", "Google", "Apple", "JBL", "Sony", "KIPRUN", "Nike", "adidas"], required: true, weight: 10, scope: "universal" },
+  { key: "brandPreference", prompt: "Do you have a preferred brand?", choices: ["No preference", "iQOO", "OnePlus", "Nothing", "Google", "Apple", "Samsung", "Xiaomi", "Poco", "Realme", "Vivo", "Motorola", "JBL", "Sony", "boAt", "Bose", "Sennheiser", "KIPRUN", "Nike", "adidas", "Skechers", "Puma", "ASICS", "New Balance", "Brooks", "Hoka", "Salomon"], required: true, weight: 10, scope: "universal" },
   { key: "mustHaves", prompt: "Anything you definitely need—or want to avoid?", choices: ["No deal-breakers", "Long battery", "Noise cancellation", "Low latency", "Soft cushioning", "Compact"], required: true, weight: 20, scope: "universal" },
 ];
 
@@ -88,9 +88,13 @@ function normalized(value: string): string {
   return value.trim().toLowerCase().replace(/[–—]/g, "-").replace(/\s+/g, " ");
 }
 
+function isNeutralPreference(value: string): boolean {
+  return ["no preference", "either", "no deal-breakers", "none"].includes(normalized(value));
+}
+
 function tagMatches(tags: string[], value: string): boolean {
   const target = normalized(value);
-  if (["no preference", "either", "balanced", "no deal-breakers", "none"].includes(target)) return true;
+  if (isNeutralPreference(target)) return true;
   return tags.some((tag) => normalized(tag).includes(target) || target.includes(normalized(tag)));
 }
 
@@ -100,46 +104,87 @@ function chooseVariant(product: Product, profile: PreferenceProfile): ProductVar
   return matching ?? product.variants.find((item) => item.stock > 0) ?? null;
 }
 
-interface ScoredProduct { product: Product; variant: ProductVariant; score: number; valueScore: number; matched: string[]; }
+interface ScoredProduct { product: Product; variant: ProductVariant; score: number; rankingScore: number; valueScore: number; matched: string[]; }
 
-export function rankProducts(profile: PreferenceProfile, catalog: Product[]): Recommendation[] {
-  if (!isProfileComplete(profile) || !profile.category || !profile.maxBudgetPaise) return [];
+function budgetTierScore(pricePaise: number, maxBudgetPaise: number): number {
+  const ratio = pricePaise / maxBudgetPaise;
+  // A maximum budget is still a quality signal. The strongest overall match
+  // should normally sit in the useful middle-to-upper part of the range,
+  // without forcing the shopper to spend the entire ceiling.
+  return Math.max(0, Math.round(18 - Math.abs(ratio - 0.72) * 28));
+}
+
+function valueTierScore(pricePaise: number, maxBudgetPaise: number): number {
+  const ratio = pricePaise / maxBudgetPaise;
+  return Math.max(0, Math.round(18 - Math.abs(ratio - 0.35) * 30));
+}
+
+export function rankProducts(profile: PreferenceProfile, catalog: Product[]): RankResult {
+  if (!isProfileComplete(profile) || !profile.category || !profile.maxBudgetPaise) return { recommendations: [], brandFallback: false };
   const categoryWeights = new Map(categoryProfile(profile.category).questions.map((item) => [item.key, item.weight]));
   const mustHaves = profile.mustHaves.filter((item) => !["none", "no deal-breakers"].includes(normalized(item)));
-  const scored: ScoredProduct[] = catalog.filter((product) => product.kind === "primary" && product.category === profile.category).flatMap((product) => {
+  const hasBrandPreference = Boolean(profile.brandPreference && normalized(profile.brandPreference) !== "no preference");
+
+  const scoreProducts = (candidates: Product[]): ScoredProduct[] => candidates.filter((product) => product.kind === "primary" && product.category === profile.category).flatMap((product) => {
     const variant = chooseVariant(product, profile);
     if (!variant || variant.pricePaise > profile.maxBudgetPaise!) return [];
     if (mustHaves.some((need) => !tagMatches(product.tags, need))) return [];
     const matched: string[] = [];
     let score = 25;
-    if (profile.useCase && tagMatches(product.tags, profile.useCase)) { score += 18; matched.push(profile.useCase); }
-    if (profile.brandPreference && normalized(profile.brandPreference) !== "no preference" && normalized(product.brand) === normalized(profile.brandPreference)) { score += 10; matched.push(`${product.brand} preference`); }
+    if (profile.useCase && !isNeutralPreference(profile.useCase) && tagMatches(product.tags, profile.useCase)) { score += 18; matched.push(profile.useCase); }
+    if (hasBrandPreference && normalized(product.brand) === normalized(profile.brandPreference!)) { score += 10; matched.push(`${product.brand} preference`); }
     for (const [key, value] of Object.entries(profile.answers)) {
+      if (isNeutralPreference(value)) continue;
       if (tagMatches(product.tags, value) || normalized(variant.label) === normalized(value)) { score += categoryWeights.get(key) ?? 8; matched.push(value); }
     }
     if (mustHaves.length) { score += 20; matched.push(...mustHaves); }
-    const valueScore = Math.round((1 - variant.pricePaise / profile.maxBudgetPaise!) * 25 + score);
-    return [{ product, variant, score: Math.min(100, score), valueScore, matched: [...new Set(matched)].slice(0, 4) }];
+    const tierScore = budgetTierScore(variant.pricePaise, profile.maxBudgetPaise!);
+    // Preference matches dominate. Budget tier only breaks ties between
+    // products that satisfy the shopper equally well.
+    const rankingScore = score * 100 + tierScore;
+    const valueScore = score * 100 + valueTierScore(variant.pricePaise, profile.maxBudgetPaise!);
+    return [{ product, variant, score: Math.min(100, score + tierScore), rankingScore, valueScore, matched: [...new Set(matched)].slice(0, 4) }];
   });
+
+  // When a specific brand is selected, only consider that brand's products.
+  // Fall back to all brands if no products from the preferred brand pass filters.
+  let scored: ScoredProduct[];
+  let brandFallback = false;
+  if (hasBrandPreference) {
+    const brandOnly = catalog.filter((product) => normalized(product.brand) === normalized(profile.brandPreference!));
+    scored = scoreProducts(brandOnly);
+    if (!scored.length) {
+      scored = scoreProducts(catalog);
+      brandFallback = scored.length > 0;
+    }
+  } else {
+    scored = scoreProducts(catalog);
+  }
+
   scored.sort((a, b) => {
-    const gap = b.score - a.score;
-    if (Math.abs(gap) <= GROWTH_POLICY.promotionTieThreshold && a.product.promoted !== b.product.promoted) return a.product.promoted ? -1 : 1;
-    return gap || a.variant.pricePaise - b.variant.pricePaise;
+    const gap = b.rankingScore - a.rankingScore;
+    if (gap === 0 && a.product.promoted !== b.product.promoted) return a.product.promoted ? -1 : 1;
+    return gap || b.variant.pricePaise - a.variant.pricePaise;
   });
-  if (!scored.length) return [];
+  if (!scored.length) return { recommendations: [], brandFallback: false };
   const best = scored[0]!;
   const remaining = scored.slice(1);
   const value = [...remaining].sort((a, b) => b.valueScore - a.valueScore || b.score - a.score)[0];
   const alternative = remaining.find((item) => item !== value);
   const selected = [best, value, alternative].filter((item): item is ScoredProduct => Boolean(item));
   const labels: Recommendation["label"][] = ["Best fit", "Best value", "Alternative"];
-  return selected.map((item, index) => ({
+  const recommendations = selected.map((item, index) => ({
     productId: item.product.id, variantId: item.variant.id, label: labels[index]!, fitScore: item.score,
     matchedNeeds: item.matched.length ? item.matched : ["Within budget", "Available now"],
-    tradeoff: item.score >= 75 ? "Costs more than the lowest-priced match." : "Trades one preference for stronger overall value.",
+    tradeoff: index === 0
+      ? "Prioritizes your strongest preferences without using the full budget by default."
+      : index === 1
+        ? `Leaves ₹${Math.round((profile.maxBudgetPaise! - item.variant.pricePaise) / 100).toLocaleString("en-IN")} in your budget while keeping a strong match.`
+        : "Offers a different balance of price and preferences.",
     reason: `${item.product.name} matches ${item.matched.slice(0, 2).join(" and ") || "your budget and core use"}.`,
-    promotionInfluencedTie: item.product.promoted && Math.abs(best.score - item.score) <= GROWTH_POLICY.promotionTieThreshold,
+    promotionInfluencedTie: item.product.promoted && best.rankingScore === item.rankingScore,
   }));
+  return { recommendations, brandFallback };
 }
 
 export function recommendedAddons(profile: PreferenceProfile, primary: Product, catalog: Product[]): Product[] {

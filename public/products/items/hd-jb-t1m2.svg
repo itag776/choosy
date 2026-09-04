@@ -1,0 +1,78 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 300" width="100%" height="100%">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#120e0a"/>
+      <stop offset="100%" stop-color="#261a12"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="50%" cy="48%" r="50%">
+      <stop offset="0%" stop-color="#fb923c" stop-opacity="0.22"/>
+      <stop offset="100%" stop-color="#fb923c" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="10" stdDeviation="14" flood-color="#000" flood-opacity="0.5"/>
+    </filter>
+  </defs>
+
+  <!-- Background -->
+  <rect width="400" height="300" fill="url(#bg)"/>
+  <circle cx="200" cy="135" r="125" fill="url(#glow)"/>
+
+  <!-- Sound Waves / Frequency visualization rings -->
+  <circle cx="200" cy="135" r="85" stroke="#fb923c" stroke-opacity="0.1" stroke-width="1.5" fill="none" stroke-dasharray="4 4"/>
+  <circle cx="200" cy="135" r="105" stroke="#fb923c" stroke-opacity="0.06" stroke-width="1" fill="none"/>
+
+  
+  <!-- OVER-EAR HEADPHONES GRAPHIC -->
+  <g transform="translate(130, 48)" filter="url(#shadow)">
+    <!-- Headband Arch -->
+    <path d="M 22 105 C 22 30, 118 30, 118 105" fill="none" stroke="#475569" stroke-width="11" stroke-linecap="round"/>
+    <path d="M 28 95 C 28 36, 112 36, 112 95" fill="none" stroke="#1e293b" stroke-width="7" stroke-linecap="round"/>
+    <path d="M 38 75 C 38 45, 102 45, 102 75" fill="none" stroke="#fb923c" stroke-opacity="0.6" stroke-width="2.5" stroke-linecap="round"/>
+
+    <!-- Left Arm & Ear Cup -->
+    <g transform="translate(6, 85)">
+      <!-- Arm slider -->
+      <rect x="12" y="0" width="7" height="24" rx="2" fill="#64748b"/>
+      <!-- Yoke hinge -->
+      <path d="M 8 18 C 8 28, 23 28, 23 18" fill="none" stroke="#94a3b8" stroke-width="3"/>
+      <!-- Outer Ear Cup -->
+      <ellipse cx="15" cy="42" rx="18" ry="28" fill="#1e293b" stroke="#334155" stroke-width="2"/>
+      <!-- Inner Cushion -->
+      <ellipse cx="18" cy="42" rx="12" ry="22" fill="#0f172a"/>
+      <!-- Center Brand Plate -->
+      <ellipse cx="13" cy="42" rx="6" ry="12" fill="#fb923c" fill-opacity="0.3"/>
+    </g>
+
+    <!-- Right Arm & Ear Cup -->
+    <g transform="translate(103, 85)">
+      <!-- Arm slider -->
+      <rect x="12" y="0" width="7" height="24" rx="2" fill="#64748b"/>
+      <!-- Yoke hinge -->
+      <path d="M 8 18 C 8 28, 23 28, 23 18" fill="none" stroke="#94a3b8" stroke-width="3"/>
+      <!-- Outer Ear Cup -->
+      <ellipse cx="16" cy="42" rx="18" ry="28" fill="#1e293b" stroke="#334155" stroke-width="2"/>
+      <!-- Inner Cushion -->
+      <ellipse cx="13" cy="42" rx="12" ry="22" fill="#0f172a"/>
+      <!-- Center Brand Plate -->
+      <ellipse cx="18" cy="42" rx="6" ry="12" fill="#fb923c" fill-opacity="0.3"/>
+    </g>
+  </g>
+  
+
+  <!-- Brand watermark/badge (Top Left) -->
+  <g transform="translate(24, 30)">
+    <text x="0" y="0" fill="#94a3b8" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif" font-size="11" font-weight="700" letter-spacing="2">JBL</text>
+  </g>
+
+  <!-- Audio Spec Badge (Top Right) -->
+  <g transform="translate(305, 22)">
+    <rect width="71" height="18" rx="9" fill="rgba(255,255,255,0.08)" stroke="rgba(255,255,255,0.12)" stroke-width="1"/>
+    <text x="35.5" y="12.5" fill="#fb923c" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif" font-size="9" font-weight="800" text-anchor="middle" letter-spacing="0.5">OVER-EAR</text>
+  </g>
+
+  <!-- Bottom Info Section -->
+  <g transform="translate(24, 256)">
+    <text x="0" y="0" fill="#f8fafc" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif" font-size="15" font-weight="700" letter-spacing="-0.3">JBL Tour One M2</text>
+    <text x="0" y="18" fill="#94a3b8" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif" font-size="11" font-weight="500">JBL Pure Bass • Spatial Sound</text>
+  </g>
+</svg>
