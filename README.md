@@ -1,5 +1,5 @@
 # Choosy
-
+Website : https://trychoosy.vercel.app/
 **Shopping that listens.**
 
 Choosy is a conversational buying agent for Razorpay Buildathon Track 01: AI Growth & Agentic Commerce. It asks adaptive questions until every required constraint is explicit, ranks only real merchant inventory with deterministic code, explains the shortlist, builds a budget-safe cart, and creates a Razorpay Test Mode Payment Link only after explicit confirmation.
