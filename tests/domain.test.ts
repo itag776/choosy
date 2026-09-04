@@ -2,7 +2,7 @@ import { createHmac } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DEMO_CATALOG } from "@/lib/catalog";
 import { createCommerceAuditEvent, verifyCommerceAuditChain } from "@/lib/commerce-audit";
-import { buildCart, emptyPreferenceProfile, isProfileComplete, nextQuestion, rankProducts, recommendedAddons, resolveCoveredQuestions, validateCart } from "@/lib/commerce-policy";
+import { allQuestions, buildCart, emptyPreferenceProfile, isProfileComplete, nextQuestion, noMatchRecovery, rankProducts, recommendedAddons, resolveCoveredQuestions, validateCart } from "@/lib/commerce-policy";
 import { createMachineCheckout, createMachineQuote, executeShoppingCommand, markSelectedItemUnavailable, merchantDashboard, processRazorpayWebhook, reconcileShoppingPayment, sendShoppingMessage } from "@/lib/commerce-service";
 import { createOperatorToken, verifyAccessCode, verifyOperatorToken } from "@/lib/operator-auth";
 import { quickChoicesForQuestion } from "@/lib/quick-choices";
@@ -33,8 +33,24 @@ describe("discovery and ranking boundary",()=>{
   it("keeps category-specific quick choices isolated",()=>{
     expect(quickChoicesForQuestion("size","phones")).toEqual(["Compact","Standard","Large","No preference"]);
     expect(quickChoicesForQuestion("size","phones")).not.toContain("UK 7");
-    expect(quickChoicesForQuestion("size","running-shoes")).toEqual(["UK 7","UK 8","UK 9","UK 10"]);
+    expect(quickChoicesForQuestion("size","running-shoes")).toEqual(["UK 5","UK 5.5","UK 6","UK 6.5","UK 7","UK 7.5","UK 8","UK 8.5","UK 9","UK 9.5","UK 10","UK 10.5","UK 11","UK 11.5","UK 12"]);
+    expect(quickChoicesForQuestion("useCase","running-shoes")).toEqual(["Daily training","Long runs","Speed / race day","Walking / casual"]);
+    expect(quickChoicesForQuestion("support","running-shoes")).toEqual(["Neutral","Extra stability","Not sure"]);
     expect(quickChoicesForQuestion("brandPreference","phones")).toEqual(["No preference","iQOO","OnePlus","Nothing","Google","Apple","Xiaomi","Samsung","Motorola","Poco","Realme","Vivo"]);
+  });
+  it("asks distinct shoe questions without overlapping activity and distance",()=>{
+    const profile:PreferenceProfile={...emptyPreferenceProfile(),category:"running-shoes",confirmedKeys:["category"]};
+    const questions=allQuestions(profile);
+    expect(questions.map((question)=>question.key)).toEqual(["category","maxBudgetPaise","useCase","size","terrain","support","cushioning","brandPreference"]);
+    expect(questions.map((question)=>question.key)).not.toContain("distance");
+    expect(questions.find((question)=>question.key==="useCase")?.prompt).toBe("What should these shoes be best at?");
+  });
+  it("extracts several shoe needs at once so the chat does not ask them again",()=>{
+    const result=extractDeterministicPreferences(emptyPreferenceProfile(),"I need neutral trail running shoes in UK 11.5 for long runs with responsive cushioning");
+    expect(result.profile.category).toBe("running-shoes");
+    expect(result.profile.useCase).toBe("Long runs");
+    expect(result.profile.answers).toMatchObject({size:"UK 11.5",terrain:"Trail",support:"Neutral",cushioning:"Responsive"});
+    expect(result.confirmedKeys).toEqual(expect.arrayContaining(["category","useCase","size","terrain","support","cushioning"]));
   });
   it("does not ask a category question already answered by an equivalent preference",()=>{
     const profile:PreferenceProfile={category:"phones",maxBudgetPaise:50_000_00,useCase:"Photography",brandPreference:"No preference",mustHaves:[],answers:{},confirmedKeys:["category","maxBudgetPaise","useCase","brandPreference","mustHaves"]};
@@ -42,6 +58,52 @@ describe("discovery and ranking boundary",()=>{
     expect(resolved.answers.priority).toBe("Camera");
     expect(resolved.confirmedKeys).toContain("priority");
     expect(nextQuestion(resolved)?.key).toBe("os");
+  });
+  it("infers the phone platform from a specific brand instead of asking a redundant OS question",()=>{
+    const apple:PreferenceProfile={category:"phones",maxBudgetPaise:100_000_00,useCase:"Everyday",brandPreference:"Apple",mustHaves:[],answers:{},confirmedKeys:["category","maxBudgetPaise","useCase","brandPreference","mustHaves"]};
+    const resolvedApple=resolveCoveredQuestions(apple);
+    expect(resolvedApple.answers.os).toBe("iOS");
+    expect(resolvedApple.confirmedKeys).toContain("os");
+    expect(nextQuestion(resolvedApple)?.key).not.toBe("os");
+
+    const samsung=resolveCoveredQuestions({...apple,brandPreference:"Samsung"});
+    expect(samsung.answers.os).toBe("Android");
+
+    const iosFirst=resolveCoveredQuestions({...apple,brandPreference:null,answers:{os:"iOS"},confirmedKeys:apple.confirmedKeys.filter((key)=>key!=="brandPreference").concat("os")});
+    expect(iosFirst.brandPreference).toBe("Apple");
+    expect(iosFirst.confirmedKeys).toContain("brandPreference");
+  });
+  it("reuses a headphone use case as the equivalent environment answer",()=>{
+    const profile:PreferenceProfile={category:"headphones",maxBudgetPaise:15_000_00,useCase:"Travel",brandPreference:"No preference",mustHaves:[],answers:{},confirmedKeys:["category","maxBudgetPaise","useCase","brandPreference","mustHaves"]};
+    const resolved=resolveCoveredQuestions(profile);
+    expect(resolved.answers.environment).toBe("Commute");
+    expect(resolved.confirmedKeys).toContain("environment");
+  });
+  it("extracts an iPhone request as phone, Apple, and iOS without model help",()=>{
+    const extracted=extractDeterministicPreferences(emptyPreferenceProfile(),"I want an iPhone under ₹1 lakh for photography");
+    const resolved=resolveCoveredQuestions(extracted.profile);
+    expect(resolved.category).toBe("phones");
+    expect(resolved.brandPreference).toBe("Apple");
+    expect(resolved.answers.os).toBe("iOS");
+    expect(resolved.answers.priority).toBe("Camera");
+  });
+  it("remembers a brand stated before the product category",()=>{const result=extractDeterministicPreferences(emptyPreferenceProfile(),"I want Apple");expect(result.profile.category).toBeNull();expect(result.profile.brandPreference).toBe("Apple");expect(result.confirmedKeys).toContain("brandPreference");});
+  it("drops stale category answers when the shopper naturally switches products",()=>{
+    const phone:PreferenceProfile={category:"phones",maxBudgetPaise:50_000_00,useCase:"Gaming",brandPreference:"No preference",mustHaves:[],answers:{os:"Android",priority:"Performance",size:"Large"},confirmedKeys:["category","maxBudgetPaise","useCase","brandPreference","mustHaves","os","priority","size"]};
+    const result=extractDeterministicPreferences(phone,"Actually, switch to headphones for travel");
+    expect(result.profile.category).toBe("headphones");
+    expect(result.profile.answers.os).toBeUndefined();
+    expect(result.profile.answers.size).toBeUndefined();
+    expect(result.profile.useCase).toBe("Travel");
+  });
+  it("drops universal preferences that become irrelevant after a category switch",()=>{
+    const shoes:PreferenceProfile={category:"running-shoes",maxBudgetPaise:20_000_00,useCase:"Fitness",brandPreference:"Nike",mustHaves:["Soft cushioning"],answers:{size:"UK 9",terrain:"Road",distance:"10 km+",cushioning:"Soft"},confirmedKeys:["category","maxBudgetPaise","useCase","brandPreference","mustHaves","size","terrain","distance","cushioning"]};
+    const result=extractDeterministicPreferences(shoes,"Actually, switch to phones");
+    expect(result.profile.category).toBe("phones");
+    expect(result.profile.brandPreference).toBeNull();
+    expect(result.profile.useCase).toBeNull();
+    expect(result.profile.mustHaves).toEqual([]);
+    expect(result.profile.confirmedKeys).not.toEqual(expect.arrayContaining(["brandPreference","useCase","mustHaves","terrain","distance","cushioning"]));
   });
   it("skips an overlapping feature question but keeps distinct questions",()=>{
     const profile:PreferenceProfile={category:"headphones",maxBudgetPaise:15_000_00,useCase:"Travel",brandPreference:"No preference",mustHaves:["Noise cancellation"],answers:{},confirmedKeys:["category","maxBudgetPaise","useCase","brandPreference","mustHaves"]};
@@ -52,6 +114,65 @@ describe("discovery and ranking boundary",()=>{
   });
   it("withholds recommendations until every required answer is explicit",()=>{ const profile=emptyPreferenceProfile(); expect(isProfileComplete(profile)).toBe(false); expect(nextQuestion(profile)?.key).toBe("category"); expect(rankProducts(profile,DEMO_CATALOG)).toEqual({recommendations:[],brandFallback:false}); });
   it("returns only in-stock products within budget and matching hard must-haves",()=>{ const profile:PreferenceProfile={category:"phones",maxBudgetPaise:50_000_00,useCase:"Photography",brandPreference:"No preference",mustHaves:["camera"],answers:{os:"Android",priority:"Camera",size:"Standard"},confirmedKeys:["category","maxBudgetPaise","useCase","brandPreference","mustHaves","os","priority","size"]}; const {recommendations:results}=rankProducts(profile,DEMO_CATALOG); expect(results.length).toBeGreaterThan(0); expect(results.length).toBeLessThanOrEqual(3); for(const result of results){const product=DEMO_CATALOG.find((item)=>item.id===result.productId)!;const variant=product.variants.find((item)=>item.id===result.variantId)!;expect(product.tags).toContain("camera");expect(variant.pricePaise).toBeLessThanOrEqual(profile.maxBudgetPaise!);expect(variant.stock).toBeGreaterThan(0);} });
+  it("never recommends a product with the wrong exclusive platform",()=>{const profile:PreferenceProfile={category:"phones",maxBudgetPaise:150_000_00,useCase:"Everyday",brandPreference:"No preference",mustHaves:[],answers:{os:"iOS",priority:"Balanced",size:"No preference"},confirmedKeys:["category","maxBudgetPaise","useCase","brandPreference","mustHaves","os","priority","size"]};const {recommendations}=rankProducts(profile,DEMO_CATALOG);expect(recommendations.length).toBeGreaterThan(0);for(const recommendation of recommendations){const product=DEMO_CATALOG.find((item)=>item.id===recommendation.productId)!;expect(product.tags).toContain("ios");}});
+  it("treats shoe surface and support as real fit constraints",()=>{
+    const road:PreferenceProfile={category:"running-shoes",maxBudgetPaise:20_000_00,useCase:"Long runs",brandPreference:"No preference",mustHaves:[],answers:{size:"UK 9",terrain:"Road",support:"Neutral",cushioning:"Soft"},confirmedKeys:["category","maxBudgetPaise","useCase","size","terrain","support","cushioning","brandPreference"]};
+    const roadMatches=rankProducts(road,DEMO_CATALOG).recommendations;
+    expect(roadMatches.length).toBeGreaterThan(1);
+    for(const recommendation of roadMatches){const product=DEMO_CATALOG.find((item)=>item.id===recommendation.productId)!;expect(product.tags).toContain("road");expect(product.tags).toContain("neutral");expect(recommendation.reason).toContain("road use");expect(recommendation.reason).toContain("UK 9");}
+    const stability={...road,answers:{...road.answers,support:"Extra stability"}};
+    const stabilityMatches=rankProducts(stability,DEMO_CATALOG).recommendations;
+    expect(stabilityMatches.length).toBeGreaterThanOrEqual(2);
+    for(const recommendation of stabilityMatches){const product=DEMO_CATALOG.find((item)=>item.id===recommendation.productId)!;expect(product.tags).toContain("extra stability");}
+  });
+  it("offers running shoes across distinct price points",()=>{
+    const shoes=DEMO_CATALOG.filter((item)=>item.kind==="primary"&&item.category==="running-shoes");
+    const newSkus=["SH-NI-RD","SH-NI-RS3","SH-NI-JT3","SH-PM-EN4","SH-NI-STR26","SH-PM-FR3","SH-KI-KS9S","SH-AD-SOL3","SH-SK-GRP2","SH-NB-860","SH-PM-FRN2","SH-BR-AD23","SH-HK-AR8","SH-SL-DRXG","SH-NI-DS13","SH-AD-GX7","SH-PM-SCPH","SH-KI-KS9L","SH-KL-JF190"];
+    expect(shoes.length).toBeGreaterThanOrEqual(39);
+    expect(shoes.map((item)=>item.sku)).toEqual(expect.arrayContaining(newSkus));
+    const prices=shoes.map((shoe)=>shoe.variants[0]!.pricePaise/100);
+    expect(Math.min(...prices)).toBeLessThanOrEqual(3_299);
+    expect(Math.max(...prices)).toBeGreaterThanOrEqual(23_999);
+    expect(new Set(prices).size).toBeGreaterThanOrEqual(15);
+  });
+  it("adds five distinct current options below ₹10,000",()=>{
+    const budgetSkus=["SH-NI-DS13","SH-AD-GX7","SH-PM-SCPH","SH-KI-KS9L","SH-KL-JF190"];
+    const shoes=DEMO_CATALOG.filter((item)=>budgetSkus.includes(item.sku));
+    expect(shoes).toHaveLength(5);
+    expect(shoes.every((shoe)=>shoe.variants[0]!.pricePaise<=10_000_00)).toBe(true);
+  });
+  it("backs every displayed shoe brand with a stability option",()=>{
+    const brands=["KIPRUN","Nike","adidas","Skechers","ASICS","New Balance","Puma","Brooks","Salomon","Hoka"];
+    const shoes=DEMO_CATALOG.filter((item)=>item.kind==="primary"&&item.category==="running-shoes");
+    for(const brand of brands){
+      expect(shoes.some((shoe)=>shoe.brand===brand)).toBe(true);
+      expect(shoes.some((shoe)=>shoe.brand===brand&&shoe.tags.includes("extra stability"))).toBe(true);
+    }
+  });
+  it("stocks every running shoe from UK 5 through UK 12",()=>{
+    const expected=["UK 5","UK 5.5","UK 6","UK 6.5","UK 7","UK 7.5","UK 8","UK 8.5","UK 9","UK 9.5","UK 10","UK 10.5","UK 11","UK 11.5","UK 12"];
+    for(const shoe of DEMO_CATALOG.filter((item)=>item.kind==="primary"&&item.category==="running-shoes")) expect(shoe.variants.map((item)=>item.label)).toEqual(expected);
+  });
+  it("does not repeat unchanged no-match recovery questions",()=>{
+    const withoutMixedStability=DEMO_CATALOG.filter((item)=>item.sku!=="SH-SL-DRXG");
+    const profile:PreferenceProfile={category:"running-shoes",maxBudgetPaise:25_000_00,useCase:"Daily training",brandPreference:"Hoka",mustHaves:[],answers:{size:"UK 10",terrain:"Trail",support:"Extra stability",cushioning:"No preference"},confirmedKeys:["category","maxBudgetPaise","useCase","size","terrain","support","cushioning","brandPreference"]};
+    expect(noMatchRecovery(profile,withoutMixedStability).key).toBe("support");
+    expect(noMatchRecovery(profile,withoutMixedStability,new Set(["support"])).key).toBe("terrain");
+    expect(noMatchRecovery(profile,withoutMixedStability,new Set(["support","terrain"])).key).toBeNull();
+  });
+  it("ends cleanly when no recovery can restore out-of-stock inventory",()=>{
+    const unavailable=structuredClone(DEMO_CATALOG);for(const product of unavailable)for(const item of product.variants)item.stock=0;
+    const profile:PreferenceProfile={category:"phones",maxBudgetPaise:50_000_00,useCase:"Everyday",brandPreference:"No preference",mustHaves:[],answers:{os:"Android",priority:"Balanced",size:"Standard"},confirmedKeys:["category","maxBudgetPaise","useCase","brandPreference","mustHaves","os","priority","size"]};
+    expect(noMatchRecovery(profile,unavailable).key).toBeNull();
+  });
+  it("reopens the actual blocking preference when no product can match",()=>{const base:PreferenceProfile={category:"phones",maxBudgetPaise:150_000_00,useCase:"Everyday",brandPreference:"No preference",mustHaves:["Noise cancellation"],answers:{os:"Android",priority:"Balanced",size:"No preference"},confirmedKeys:["category","maxBudgetPaise","useCase","brandPreference","mustHaves","os","priority","size"]};expect(noMatchRecovery(base,DEMO_CATALOG).key).toBe("mustHaves");const affordableApple={...base,maxBudgetPaise:50_000_00,brandPreference:"Apple",mustHaves:[],answers:{...base.answers,os:"iOS"}};expect(noMatchRecovery(affordableApple,DEMO_CATALOG).key).toBe("maxBudgetPaise");});
+  it("breaks the shoe budget loop by reopening the conflicting fit answer",()=>{
+    const withoutMixedStability=DEMO_CATALOG.filter((item)=>item.sku!=="SH-SL-DRXG");
+    const profile:PreferenceProfile={category:"running-shoes",maxBudgetPaise:150_000_00,useCase:"Long runs",brandPreference:"No preference",mustHaves:[],answers:{size:"UK 9",terrain:"Trail",support:"Extra stability",cushioning:"Soft"},confirmedKeys:["category","maxBudgetPaise","useCase","size","terrain","support","cushioning","brandPreference"]};
+    const recovery=noMatchRecovery(profile,withoutMixedStability);
+    expect(["support","terrain","cushioning"]).toContain(recovery.key);
+    expect(recovery.prompt).not.toMatch(/budget|amount|rupees/i);
+  });
   it("offers no more than two category-relevant budget-safe add-ons",()=>{ const profile:PreferenceProfile={category:"phones",maxBudgetPaise:50_000_00,useCase:"Everyday",brandPreference:"No preference",mustHaves:[],answers:{os:"Android",priority:"Balanced",size:"Standard"},confirmedKeys:["category","maxBudgetPaise","useCase","brandPreference","mustHaves","os","priority","size"]}; const primary=DEMO_CATALOG.find((item)=>item.sku==="PH-OP-CE4L")!; const addons=recommendedAddons(profile,primary,DEMO_CATALOG); expect(addons).toHaveLength(2); expect(addons.every((item)=>item.kind==="addon"&&item.category==="phones")).toBe(true); });
   it("uses sourced real primary products with frozen Test Mode prices",()=>{const primaries=DEMO_CATALOG.filter((item)=>item.kind==="primary");expect(primaries.filter((item)=>item.category==="phones").length).toBeGreaterThanOrEqual(8);expect(primaries.filter((item)=>item.category==="headphones").length).toBeGreaterThanOrEqual(8);expect(primaries.filter((item)=>item.category==="running-shoes").length).toBeGreaterThanOrEqual(8);for(const product of primaries){expect(product.attributes.realProduct).toBe(true);expect(product.attributes.catalogMode).toBe("curated_snapshot");expect(product.attributes.stockMode).toBe("simulated");expect(product.attributes.priceAsOf).toBe("2026-09-03");expect(String(product.attributes.sourceUrl)).toMatch(/^https:\/\//);}expect(JSON.stringify(primaries)).not.toMatch(/Aster|Northstar|Luma 16|Orbit Quiet|Pulse Play|Serein|Vela Daily|Ridge Trail|Kite Tempo/);});
 });
@@ -63,6 +184,22 @@ describe("versioned shopping flow",()=>{
   it("uses the ledger rather than a mutable snapshot for the merchant audit",async()=>{await completePhoneDiscovery(repository);const stored=repository.sessions.get(TEST_SESSION_ID)!;stored.audit=[];repository.sessions.set(TEST_SESSION_ID,stored);const dashboard=await merchantDashboard(operator);expect(dashboard.sessions[0]!.audit.length).toBeGreaterThan(0);expect(dashboard.auditIntegrity[TEST_SESSION_ID]?.verified).toBe(true);});
   it("rejects an invalid ledger transition",async()=>{const current=await repository.get(TEST_SESSION_ID);const next=structuredClone(current);next.version=current.version+1;const event=createCommerceAuditEvent(next,{kind:"policy",title:"Invalid sequence",detail:"Test event",actor:"system",status:"blocked"});event.sequence+=1;next.audit.push(event);await expect(repository.replace(current,next,[event])).rejects.toThrow("audit conflict");});
   it("moves past an overlapping controlled question instead of asking it again",async()=>{let session=await repository.get(TEST_SESSION_ID);for(const [key,value] of [["category","Phone"],["maxBudgetPaise","₹50,000"],["useCase","Photography"]] as const)session=await sendShoppingMessage(TEST_SESSION_ID,{text:value,answerKey:key,answerValue:value,expectedVersion:session.version,idempotencyKey:`msg:dedupe:${key}`});expect(session.profile.answers.priority).toBe("Camera");expect(session.profile.confirmedKeys).toContain("priority");expect(session.activeQuestionKey).toBe("brandPreference");expect(session.messages.at(-1)?.text).not.toMatch(/camera|matters most/i);expect(session.audit.some((event)=>event.title==="Redundant follow-ups skipped")).toBe(true);});
+  it("completes the former mixed-terrain stability loop with a real match",async()=>{
+    let session=await repository.get(TEST_SESSION_ID);
+    const answers=[["category","Running shoes"],["maxBudgetPaise","₹25,000"],["useCase","Daily training"],["size","UK 10"],["terrain","Mixed"],["support","Extra stability"],["cushioning","No preference"],["brandPreference","Hoka"]] as const;
+    for(const [key,value] of answers) session=await sendShoppingMessage(TEST_SESSION_ID,{text:value,answerKey:key,answerValue:value,expectedVersion:session.version,idempotencyKey:`msg:mixed-stability:${key}`});
+    expect(session.phase).toBe("recommendations_ready");
+    expect(session.recommendations.length).toBeGreaterThan(0);
+    expect(session.activeQuestionKey).toBeNull();
+    expect(session.messages.at(-1)?.text).toContain("alternatives from other brands");
+    for(const recommendation of session.recommendations){
+      const product=DEMO_CATALOG.find((item)=>item.id===recommendation.productId)!;
+      expect(product.tags).toEqual(expect.arrayContaining(["mixed","extra stability"]));
+    }
+    expect(session.audit.filter((event)=>event.title==="No exact match found")).toHaveLength(0);
+  });
+  it("skips the OS follow-up in the real conversation after Apple is selected",async()=>{let session=await repository.get(TEST_SESSION_ID);for(const [key,value] of [["category","Phone"],["maxBudgetPaise","₹1,00,000"],["useCase","Everyday"],["brandPreference","Apple"]] as const)session=await sendShoppingMessage(TEST_SESSION_ID,{text:value,answerKey:key,answerValue:value,expectedVersion:session.version,idempotencyKey:`msg:apple:${key}`});expect(session.profile.answers.os).toBe("iOS");expect(session.profile.confirmedKeys).toContain("os");expect(session.activeQuestionKey).toBe("mustHaves");expect(session.messages.at(-1)?.text).toContain("skipped that question");expect(session.messages.at(-1)?.text).not.toContain("Android");});
+  it("remembers Apple even when it is stated before the category",async()=>{let session=await repository.get(TEST_SESSION_ID);session=await sendShoppingMessage(TEST_SESSION_ID,{text:"I want Apple",expectedVersion:session.version,idempotencyKey:"msg:apple:first"});expect(session.profile.brandPreference).toBe("Apple");expect(session.activeQuestionKey).toBe("category");session=await sendShoppingMessage(TEST_SESSION_ID,{text:"Phone",answerKey:"category",answerValue:"Phone",expectedVersion:session.version,idempotencyKey:"msg:apple:phone"});expect(session.profile.answers.os).toBe("iOS");expect(session.activeQuestionKey).toBe("maxBudgetPaise");});
   it("clarifies an unresolved question without repeating the same prompt",async()=>{vi.stubEnv("GEMINI_API_KEY","");let session=await repository.get(TEST_SESSION_ID);session=await sendShoppingMessage(TEST_SESSION_ID,{text:"Budget under ₹50,000",expectedVersion:session.version,idempotencyKey:"msg:clarify:budget"});const first=session.messages.at(-1)?.text;session=await sendShoppingMessage(TEST_SESSION_ID,{text:"No brand preference",expectedVersion:session.version,idempotencyKey:"msg:clarify:brand"});const second=session.messages.at(-1)?.text;expect(session.activeQuestionKey).toBe("category");expect(first).toBe("I can help with phones, headphones, or running shoes—which should I focus on?");expect(second).not.toBe(first);expect(second).toContain("I saved the other detail");expect(session.messages.filter((item)=>item.role==="assistant"&&item.text===first)).toHaveLength(1);});
   it("explains the supported catalog and does not repeat the same unsupported response",async()=>{let session=await repository.get(TEST_SESSION_ID);session=await sendShoppingMessage(TEST_SESSION_ID,{text:"I need a laptop",expectedVersion:session.version,idempotencyKey:"msg:unsupported:laptop"});const first=session.messages.at(-1)?.text;expect(first).toContain("only help with phones, headphones, or running shoes");expect(session.activeQuestionKey).toBe("category");session=await sendShoppingMessage(TEST_SESSION_ID,{text:"What about a tablet?",expectedVersion:session.version,idempotencyKey:"msg:unsupported:tablet"});const second=session.messages.at(-1)?.text;expect(second).toContain("three categories");expect(second).not.toBe(first);expect(session.profile.category).toBeNull();});
   it("asks for one category when a shopper requests several",async()=>{const current=await repository.get(TEST_SESSION_ID);const session=await sendShoppingMessage(TEST_SESSION_ID,{text:"Compare phones and running shoes",expectedVersion:current.version,idempotencyKey:"msg:multiple:categories"});expect(session.messages.at(-1)?.text).toContain("one category at a time");expect(session.activeQuestionKey).toBe("category");expect(session.profile.category).toBeNull();});

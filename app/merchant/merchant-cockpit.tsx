@@ -2,19 +2,55 @@
 
 import Link from "next/link";
 import { useMemo, useState } from "react";
-import { AlertTriangle, ArrowLeft, CheckCircle2, ChevronDown, Download, Package, RefreshCw, ShieldCheck, ShoppingBag, WalletCards } from "lucide-react";
+import { AlertTriangle, ArrowLeft, CheckCircle2, ChevronDown, Download, Info, Package, RefreshCw, ShieldCheck, ShoppingBag, WalletCards, XCircle } from "lucide-react";
 import { DEMO_CATALOG } from "@/lib/catalog";
-import type { GrowthBenchmarkReport, MerchantDashboard } from "@/lib/types";
+import type { CommerceAuditEvent, GrowthBenchmarkReport, MerchantDashboard, ShoppingPhase } from "@/lib/types";
 import styles from "./merchant.module.css";
 
 function percent(value: number): string { return `${Math.round(value * 100)}%`; }
 function inr(value: number): string { return `₹${Math.round(value / 100).toLocaleString("en-IN")}`; }
 function productName(id: string | null): string { return DEMO_CATALOG.find((item) => item.id === id)?.name ?? "No product selected"; }
 function actorLabel(actor: string): string { return ({ shopper: "Shopper", agent: "Choosy", buyer_agent: "AI buyer", system: "Choosy", merchant: "Merchant", razorpay: "Razorpay" } as Record<string, string>)[actor] ?? actor; }
-function phaseLabel(phase: string): string { return phase.replaceAll("_", " "); }
+function humanize(value: string): string { return value.replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase()); }
+
+type PhaseTone = "info" | "progress" | "pending" | "success" | "danger";
+const PHASE_PRESENTATION: Record<ShoppingPhase, { label: string; detail: string; tone: PhaseTone; closed: boolean }> = {
+  discovering: { label: "In progress", detail: "Collecting preferences", tone: "info", closed: false },
+  recommendations_ready: { label: "Ready to choose", detail: "Recommendations ready", tone: "progress", closed: false },
+  item_selected: { label: "In progress", detail: "Item selected", tone: "progress", closed: false },
+  cart_review: { label: "Awaiting confirmation", detail: "Cart review", tone: "pending", closed: false },
+  checkout_creating: { label: "Processing", detail: "Creating checkout", tone: "pending", closed: false },
+  checkout_ready: { label: "Payment pending", detail: "Checkout ready", tone: "pending", closed: false },
+  needs_reselection: { label: "Action required", detail: "New selection needed", tone: "danger", closed: false },
+  payment_failed: { label: "Action required", detail: "Payment failed", tone: "danger", closed: false },
+  paid: { label: "Session closed", detail: "Paid", tone: "success", closed: true },
+  agent_failure: { label: "Action required", detail: "Agent failure", tone: "danger", closed: false },
+};
+
+function phaseToneClass(tone: PhaseTone): string {
+  return ({ info: styles.phaseInfo, progress: styles.phaseProgress, pending: styles.phasePending, success: styles.phaseSuccess, danger: styles.phaseDanger })[tone];
+}
+
+function auditToneClass(status: CommerceAuditEvent["status"]): string {
+  return ({ info: styles.eventInfo, success: styles.eventSuccess, warning: styles.eventWarning, blocked: styles.eventBlocked })[status];
+}
+
+function auditIcon(status: CommerceAuditEvent["status"]) {
+  if (status === "blocked") return <XCircle size={15}/>;
+  if (status === "warning") return <AlertTriangle size={15}/>;
+  if (status === "info") return <Info size={15}/>;
+  return <CheckCircle2 size={15}/>;
+}
+
+function formatTimestamp(value: string): string {
+  return new Date(value).toLocaleString([], { day: "numeric", month: "short", year: "numeric", hour: "numeric", minute: "2-digit" });
+}
+
 function journeyName(session: MerchantDashboard["sessions"][number]): string {
   if (session.selectedProductId) return productName(session.selectedProductId);
   if (session.phase === "needs_reselection") return "New selection needed";
+  if (session.phase === "payment_failed") return "Payment was not completed";
+  if (session.phase === "agent_failure") return "Session needs attention";
   if (session.recommendations.length) return `${session.recommendations.length} recommendations ready`;
   return "Preferences in progress";
 }
@@ -85,22 +121,76 @@ export default function MerchantCockpit({ initialDashboard, benchmark }: { initi
           <div className={styles.sectionHeading}><div><p className={styles.kicker}>Recent activity</p><h2>Customer journeys</h2></div><span>{dashboard.sessions.length}</span></div>
           <div className={styles.journeyList}>
             {dashboard.sessions.length === 0 && <p className={styles.empty}>New shopping sessions will appear here.</p>}
-            {dashboard.sessions.map((session) => <button key={session.id} className={selected?.id === session.id ? styles.selectedJourney : ""} onClick={() => setSelectedId(session.id)}><span className={styles.journeyTopline}><span className={styles.statusDot}/>{phaseLabel(session.phase)}</span><strong>{journeyName(session)}</strong><small>{session.profile.category?.replace("-", " ") ?? "Exploring products"}</small></button>)}
+            {dashboard.sessions.map((session) => {
+              const presentation = PHASE_PRESENTATION[session.phase];
+              return <button key={session.id} className={selected?.id === session.id ? styles.selectedJourney : ""} onClick={() => setSelectedId(session.id)}>
+                <span className={`${styles.journeyTopline} ${phaseToneClass(presentation.tone)}`}>
+                  <span className={styles.statusDot}/>{presentation.label}
+                </span>
+                <strong>{journeyName(session)}</strong>
+                <small>{presentation.detail} · {session.profile.category?.replace("-", " ") ?? "No category yet"}</small>
+              </button>;
+            })}
           </div>
         </aside>
 
         <section className={styles.detail}>
           {!selected ? <div className={styles.emptyDetail}><ShoppingBag size={24}/><h2>No journey selected</h2><p>Choose a customer journey to view it.</p></div> : <>
-            <header className={styles.detailHeader}><div><p className={styles.kicker}>Selected journey</p><h2>{journeyName(selected)}</h2></div><span className={styles.phaseBadge}><span className={styles.statusDot}/>{phaseLabel(selected.phase)}</span></header>
-            <div className={styles.summaryRow}><div><span>Cart value</span><strong>{selected.cart ? inr(selected.cart.totalPaise) : "Not created"}</strong></div><div><span>Started from</span><strong>{phaseLabel(selected.origin ?? "shopper_ui")}</strong></div><div><span>Activity</span><strong>{selected.audit.length} events</strong></div><div><span>Demo checks</span><strong>{benchmark.choosy.completedPurchases}/{benchmark.datasetSize} passed</strong></div></div>
+            <header className={styles.detailHeader}>
+              <div><p className={styles.kicker}>Selected journey</p><h2>{journeyName(selected)}</h2></div>
+              <span className={`${styles.phaseBadge} ${phaseToneClass(PHASE_PRESENTATION[selected.phase].tone)}`}>
+                <span className={styles.statusDot}/>{PHASE_PRESENTATION[selected.phase].label}
+              </span>
+            </header>
+            <div className={styles.summaryRow}>
+              <div><span>Cart value</span><strong>{selected.cart ? inr(selected.cart.totalPaise) : "Not created"}</strong></div>
+              <div><span>Started from</span><strong>{humanize(selected.origin ?? "shopper_ui")}</strong></div>
+              <div><span>Audit trail</span><strong>{selected.audit.length} records</strong></div>
+              <div><span>Demo checks</span><strong>{benchmark.choosy.completedPurchases}/{benchmark.datasetSize} passed</strong></div>
+            </div>
+            {PHASE_PRESENTATION[selected.phase].closed && <div className={`${styles.sessionNotice} ${phaseToneClass("success")}`}>
+              <CheckCircle2 size={18}/><div><strong>Session closed</strong><span>Payment was confirmed and this customer journey is complete.</span></div>
+            </div>}
+            {PHASE_PRESENTATION[selected.phase].tone === "danger" && <div className={`${styles.sessionNotice} ${phaseToneClass("danger")}`}>
+              <AlertTriangle size={18}/><div><strong>Session needs attention</strong><span>{PHASE_PRESENTATION[selected.phase].detail}. Review the latest blocked or warning record below.</span></div>
+            </div>}
             <div className={integrity?.verified ? styles.integrity : styles.integrityWarning}>{integrity?.verified ? <ShieldCheck size={18}/> : <AlertTriangle size={18}/>}<div><strong>{integrity?.verified ? "Activity verified" : "Activity needs attention"}</strong><span>{integrity?.verified ? `${integrity.eventCount} events are complete and in order.` : integrity?.issue ?? "The activity history could not be verified."}</span></div></div>
-            {selected.checkout && <section className={styles.paymentCard}><span className={styles.paymentIcon}><WalletCards size={20}/></span><div><span>Payment</span><strong>{inr(selected.checkout.amountPaise)}</strong><small>{selected.checkout.providerId ?? "Waiting for Razorpay"}</small></div><span className={styles.paymentStatus}>{selected.checkout.status}</span></section>}
+            {selected.checkout && <section className={styles.paymentCard}><span className={styles.paymentIcon}><WalletCards size={20}/></span><div><span>Payment</span><strong>{inr(selected.checkout.amountPaise)}</strong><small>{selected.checkout.providerId ?? "Waiting for Razorpay"}</small></div><span className={`${styles.paymentStatus} ${phaseToneClass(selected.checkout.status === "paid" ? "success" : selected.checkout.status === "failed" ? "danger" : "pending")}`}>{humanize(selected.checkout.status)}</span></section>}
 
             <section className={styles.activitySection}>
-              <div className={styles.activityHeader}><div><p className={styles.kicker}>History</p><h3>Activity</h3></div><div className={styles.filters}><label><span className={styles.srOnly}>Filter activity</span><select value={outcomeFilter} onChange={(event) => setOutcomeFilter(event.target.value)}><option value="all">All activity</option><option value="success">Successful</option><option value="warning">Warnings</option><option value="blocked">Blocked</option><option value="info">Information</option></select><ChevronDown size={14}/></label><button className={styles.secondaryButton} onClick={() => setShowTechnical((value) => !value)}>{showTechnical ? "Hide details" : "Technical details"}</button><button className={styles.iconButtonLight} onClick={downloadAudit} disabled={!integrity?.verified} aria-label="Download verified activity"><Download size={16}/></button></div></div>
+              <div className={styles.activityHeader}>
+                <div><p className={styles.kicker}>Verified history</p><h3>Audit trail</h3><p className={styles.auditIntro}>Chronological, append-only records for session <span>{selected.id}</span>.</p></div>
+                <div className={styles.filters}><label><span className={styles.srOnly}>Filter audit records</span><select value={outcomeFilter} onChange={(event) => setOutcomeFilter(event.target.value)}><option value="all">All records</option><option value="success">Successful</option><option value="warning">Warnings</option><option value="blocked">Blocked</option><option value="info">Information</option></select><ChevronDown size={14}/></label><button className={styles.secondaryButton} onClick={() => setShowTechnical((value) => !value)}>{showTechnical ? "Hide technical data" : "Show technical data"}</button><button className={styles.iconButtonLight} onClick={downloadAudit} disabled={!integrity?.verified} aria-label="Download verified audit trail"><Download size={16}/></button></div>
+              </div>
               <div className={styles.timeline}>
-                {filteredAudit.map((event) => <details className={styles.event} key={event.id}><summary><span className={`${styles.eventIcon} ${event.status === "blocked" || event.status === "warning" ? styles.eventAlert : ""}`}>{event.status === "blocked" || event.status === "warning" ? <AlertTriangle size={15}/> : <CheckCircle2 size={15}/>}</span><span className={styles.eventCopy}><strong>{event.title}</strong><small>{actorLabel(event.actor)} · {event.status}</small></span><time>{new Date(event.createdAt).toLocaleDateString([], { day: "numeric", month: "short" })}</time><ChevronDown className={styles.chevron} size={16}/></summary><div className={styles.eventBody}><p>{event.detail}</p>{showTechnical && <dl className={styles.technical}><div><dt>Event type</dt><dd>{event.kind}</dd></div><div><dt>Sequence</dt><dd>#{event.sequence}</dd></div><div><dt>Hash</dt><dd>{event.hash}</dd></div></dl>}</div></details>)}
-                {filteredAudit.length === 0 && <p className={styles.empty}>No activity matches this filter.</p>}
+                {filteredAudit.map((event) => <details className={styles.event} key={event.id}>
+                  <summary>
+                    <span className={`${styles.eventIcon} ${auditToneClass(event.status)}`}>{auditIcon(event.status)}</span>
+                    <span className={styles.eventCopy}>
+                      <strong>{event.title}</strong>
+                      <small><span className={`${styles.eventStatus} ${auditToneClass(event.status)}`}>{humanize(event.status)}</span><span>{actorLabel(event.actor)}</span><span>Record #{event.sequence}</span></small>
+                    </span>
+                    <time dateTime={event.createdAt}>{formatTimestamp(event.createdAt)}</time>
+                    <ChevronDown className={styles.chevron} size={16}/>
+                  </summary>
+                  <div className={styles.eventBody}>
+                    <p>{event.detail}</p>
+                    {showTechnical && <div className={styles.technicalPanel}>
+                      <dl className={styles.technical}>
+                        <div><dt>Record type</dt><dd>{humanize(event.kind)}</dd></div>
+                        <div><dt>Actor</dt><dd>{actorLabel(event.actor)}</dd></div>
+                        <div><dt>Status</dt><dd>{humanize(event.status)}</dd></div>
+                        <div><dt>Recorded at</dt><dd>{formatTimestamp(event.createdAt)}</dd></div>
+                        <div><dt>Session version</dt><dd>{event.sessionVersion}</dd></div>
+                        <div><dt>Sequence</dt><dd>#{event.sequence}</dd></div>
+                        <div><dt>Previous hash</dt><dd className={styles.monospace}>{event.previousHash}</dd></div>
+                        <div><dt>Record hash</dt><dd className={styles.monospace}>{event.hash}</dd></div>
+                      </dl>
+                      {event.evidence && <div className={styles.evidence}><span>Evidence</span><pre>{JSON.stringify(event.evidence, null, 2)}</pre></div>}
+                    </div>}
+                  </div>
+                </details>)}
+                {filteredAudit.length === 0 && <p className={styles.empty}>No audit records match this filter.</p>}
               </div>
             </section>
 

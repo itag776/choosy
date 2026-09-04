@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { CATALOG_MARKET, CATALOG_PRICE_AS_OF, CATALOG_PRICE_NOTICE, CATALOG_VERSION, categoryProfile, productById, variantById } from "@/lib/catalog";
 import { createCommerceAuditEvent } from "@/lib/commerce-audit";
-import { allQuestions, buildCart, cartDigest, createQuote, GROWTH_POLICY, isProfileComplete, nextQuestion, QUOTE_TTL_MS, quoteDigest, rankProducts, recommendedAddons, resolveCoveredQuestions, validateCart } from "@/lib/commerce-policy";
+import { allQuestions, buildCart, cartDigest, createQuote, GROWTH_POLICY, isProfileComplete, nextQuestion, noMatchRecovery, QUOTE_TTL_MS, quoteDigest, rankProducts, recommendedAddons, resolveCoveredQuestions, validateCart } from "@/lib/commerce-policy";
 import { createShoppingSession, DEFAULT_MERCHANT_ID, publicShoppingSession } from "@/lib/commerce-data";
 import { checkoutIntent, createOrReconcileCheckout, fetchPaymentLink } from "@/lib/razorpay";
 import { createAndStoreSession, getCommerceRepository, RepositoryConflictError } from "@/lib/repository";
@@ -21,7 +21,37 @@ function structuredPreferenceChanges(before: ShoppingSessionSnapshot["profile"],
   for (const [key, value] of Object.entries(after.answers)) if (before.answers[key] !== value) changes[key] = value;
   return changes;
 }
-function clarificationForQuestion(key: string, choices: string[], previousAssistantText?: string): string {
+function recoveryPreferenceValue(profile: ShoppingSessionSnapshot["profile"], key: string): unknown {
+  if (key === "category" || key === "maxBudgetPaise" || key === "useCase" || key === "brandPreference" || key === "mustHaves") return profile[key];
+  return profile.answers[key];
+}
+function attemptedRecoveryKeys(session: ShoppingSessionSnapshot, profile: ShoppingSessionSnapshot["profile"]): Set<string> {
+  let searchStartedAt = -1;
+  for (let index = session.audit.length - 1; index >= 0; index -= 1) {
+    if (session.audit[index]?.title === "New search started") { searchStartedAt = index; break; }
+  }
+  const attempted = new Set<string>();
+  for (const event of session.audit.slice(searchStartedAt + 1)) {
+    if (event.title !== "No compliant product found") continue;
+    const key = event.evidence?.recoveryKey;
+    if (typeof key !== "string") continue;
+    const previousValue = event.evidence?.recoveryValue;
+    if (previousValue === undefined || JSON.stringify(previousValue) === JSON.stringify(recoveryPreferenceValue(profile, key))) attempted.add(key);
+  }
+  return attempted;
+}
+function progressiveQuestionResponse(profile: ShoppingSessionSnapshot["profile"], prompt: string, changes: Record<string, unknown>, coveredKeys: string[]): string {
+  if (profile.category === "phones" && coveredKeys.includes("os") && profile.brandPreference && profile.answers.os) {
+    return `${profile.brandPreference} phones use ${profile.answers.os}, so I’ve skipped that question. ${prompt}`;
+  }
+  const summaries: string[] = [];
+  if ("category" in changes && profile.category) summaries.push(profile.category.replace("-", " "));
+  if ("maxBudgetPaise" in changes && profile.maxBudgetPaise) summaries.push(`up to ₹${Math.round(profile.maxBudgetPaise / 100).toLocaleString("en-IN")}`);
+  if ("useCase" in changes && profile.useCase) summaries.push(profile.useCase.toLowerCase());
+  if ("brandPreference" in changes && profile.brandPreference) summaries.push(profile.brandPreference === "No preference" ? "any brand" : profile.brandPreference);
+  return summaries.length ? `Got it — ${summaries.slice(0, 3).join(", ")}. ${prompt}` : prompt;
+}
+function clarificationForQuestion(key: string, choices: string[], previousAssistantText?: string, category?: ShoppingSessionSnapshot["profile"]["category"]): string {
   const prompts: Record<string, string> = {
     category: "I can help with phones, headphones, or running shoes—which should I focus on?",
     maxBudgetPaise: "Give me a maximum amount in rupees so every option stays within your limit.",
@@ -29,7 +59,9 @@ function clarificationForQuestion(key: string, choices: string[], previousAssist
     brandPreference: "Name a favourite brand, or choose “No preference” to keep the search open.",
     mustHaves: "Name any non-negotiable feature, or choose “No deal-breakers.”",
   };
-  const clarification = prompts[key] ?? `To narrow this down, choose one: ${choices.join(", ")}.`;
+  const clarification = category === "running-shoes" && key === "useCase"
+    ? "Choose the main job for this pair: daily training, long runs, speed or race day, or walking."
+    : prompts[key] ?? `To narrow this down, choose one: ${choices.join(", ")}.`;
   if (previousAssistantText !== clarification) return clarification;
   const labels: Record<string, string> = { category: "the product category", maxBudgetPaise: "your maximum budget", useCase: "the main use", brandPreference: "your brand preference", mustHaves: "any non-negotiable feature" };
   return `I saved the other detail. I still need ${labels[key] ?? "this preference"}; use one of the choices below.`;
@@ -158,9 +190,11 @@ export async function sendShoppingMessage(sessionId: string, input: { text: stri
   if (!pending && isProfileComplete(profile)) {
     const catalog = await repository.getCatalog(); const { recommendations, brandFallback } = rankProducts(profile, catalog);
     if (!recommendations.length) {
-      next.profile.confirmedKeys = next.profile.confirmedKeys.filter((key) => key !== "maxBudgetPaise"); next.activeQuestionKey = "maxBudgetPaise";
-      next.messages.push(message("assistant", "I couldn’t find a current match for everything you asked for. Would you like to try a different budget?"));
-      events.push({ kind: "guardrail", title: "No compliant product found", detail: "Choosy refused to invent or stretch beyond the confirmed criteria.", actor: "system", status: "blocked" });
+      const recovery = noMatchRecovery(profile, catalog, attemptedRecoveryKeys(current, profile));
+      if (recovery.key) next.profile.confirmedKeys = next.profile.confirmedKeys.filter((key) => key !== recovery.key);
+      next.activeQuestionKey = recovery.key;
+      next.messages.push(message("assistant", recovery.prompt));
+      events.push({ kind: "guardrail", title: "No compliant product found", detail: recovery.key ? "Choosy refused to invent or stretch beyond the confirmed criteria and reopened a blocking preference that has not already been retried unchanged." : "Every useful recovery path was already tried without changing the conflicting answers, so Choosy stopped instead of repeating a question.", actor: "system", status: "blocked", evidence: { recoveryKey: recovery.key, ...(recovery.key ? { recoveryValue: recoveryPreferenceValue(profile, recovery.key) } : { recoveryExhausted: true }) } });
       return publicShoppingSession(await persist(current, next, "discovering", events));
     }
     next.recommendations = recommendations; next.activeQuestionKey = null;
@@ -169,14 +203,16 @@ export async function sendShoppingMessage(sessionId: string, input: { text: stri
     const topProduct = catalog.find((item) => item.id === topRecommendation.productId)!;
     const topVariant = topProduct.variants.find((item) => item.id === topRecommendation.variantId)!;
     const topReasons = topRecommendation.matchedNeeds.slice(0, 2).join(" and ").toLowerCase();
-    next.messages.push(message("assistant", `${brandNotice}I found ${recommendations.length} available ${recommendations.length === 1 ? "match" : "matches"} within your budget. My top pick is ${topProduct.name} at ₹${Math.round(topVariant.pricePaise / 100).toLocaleString("en-IN")} because it fits ${topReasons}. I also included a value pick and a strong alternative so you can compare.`));
+    const comparisonNote = recommendations.length > 1 ? " I separated the strongest overall fit from the value pick and alternative so the trade-offs are clear." : "";
+    const shoeContext = profile.category === "running-shoes" ? ` for ${profile.answers.terrain?.toLowerCase() ?? "your surface"}` : "";
+    next.messages.push(message("assistant", `${brandNotice}I found ${recommendations.length} available ${recommendations.length === 1 ? "match" : "matches"}${shoeContext} within your budget. My top pick is ${topProduct.name} at ₹${Math.round(topVariant.pricePaise / 100).toLocaleString("en-IN")} because it fits ${topReasons}.${profile.category === "running-shoes" ? comparisonNote : " I also included a value pick and the best alternative so you can compare."}`));
     events.push({ kind: "policy", title: "Enough preferences collected", detail: "Every required preference was answered directly or covered by an equivalent confirmed preference.", actor: "system", status: "success", evidence: { confirmedKeys: profile.confirmedKeys } }, { kind: "catalog", title: "Product matches created", detail: `${recommendations.length} available products met the shopper’s budget, preferences, and deal-breakers.`, actor: "system", status: "success", evidence: { productIds: recommendations.map((item) => item.productId), catalogVersion: CATALOG_VERSION, ...(brandFallback ? { brandFallback: true, requestedBrand: profile.brandPreference } : {}) } });
     return publicShoppingSession(await persist(current, next, "recommendations_ready", events));
   }
   next.activeQuestionKey = pending?.key ?? current.activeQuestionKey;
   if (pending) {
     const previousAssistantText = [...current.messages].reverse().find((item) => item.role === "assistant")?.text;
-    next.messages.push(message("assistant", pending.key === current.activeQuestionKey ? clarificationForQuestion(pending.key, pending.choices, previousAssistantText) : pending.prompt));
+    next.messages.push(message("assistant", pending.key === current.activeQuestionKey ? clarificationForQuestion(pending.key, pending.choices, previousAssistantText, profile.category) : progressiveQuestionResponse(profile, pending.prompt, preferenceChanges, coveredKeys)));
   }
   events.push({ kind: "policy", title: "Waiting for more information", detail: `Choosy needs ${pending?.key ?? "more context"} before looking for products.`, actor: "system", status: "success", evidence: { nextQuestionKey: pending?.key } });
   return publicShoppingSession(await persist(current, next, "discovering", events));

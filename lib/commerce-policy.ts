@@ -23,26 +23,68 @@ const universalQuestions: NextQuestion[] = [
   { key: "maxBudgetPaise", prompt: "What’s your maximum budget?", choices: ["₹5,000", "₹10,000", "₹25,000", "₹50,000", "₹70,000", "₹1,00,000", "₹1,50,000"], required: true, weight: 20, scope: "universal" },
   { key: "useCase", prompt: "What will you use it for most?", choices: ["Everyday", "Work", "Travel", "Fitness", "Gaming", "Photography"], required: true, weight: 18, scope: "universal" },
   { key: "brandPreference", prompt: "Do you have a preferred brand?", choices: ["No preference", "iQOO", "OnePlus", "Nothing", "Google", "Apple", "Samsung", "Xiaomi", "Poco", "Realme", "Vivo", "Motorola", "JBL", "Sony", "boAt", "Bose", "Sennheiser", "KIPRUN", "Nike", "adidas", "Skechers", "Puma", "ASICS", "New Balance", "Brooks", "Hoka", "Salomon"], required: true, weight: 10, scope: "universal" },
-  { key: "mustHaves", prompt: "Anything you definitely need—or want to avoid?", choices: ["No deal-breakers", "Long battery", "Noise cancellation", "Low latency", "Soft cushioning", "Compact"], required: true, weight: 20, scope: "universal" },
+  { key: "mustHaves", prompt: "Any features you definitely need?", choices: ["No deal-breakers", "Long battery", "Noise cancellation", "Low latency", "Soft cushioning", "Compact"], required: true, weight: 20, scope: "universal" },
 ];
+
+const runningShoeUseCaseQuestion: NextQuestion = {
+  key: "useCase",
+  prompt: "What should these shoes be best at?",
+  choices: ["Daily training", "Long runs", "Speed / race day", "Walking / casual"],
+  required: true,
+  weight: 24,
+  scope: "universal",
+};
 
 export function allQuestions(profile: PreferenceProfile): NextQuestion[] {
   if (!profile.category) return universalQuestions;
-  return [...universalQuestions, ...categoryProfile(profile.category).questions.map((question) => ({ ...question, scope: "category" as const }))];
+  const categoryQuestions = categoryProfile(profile.category).questions.map((question) => ({ ...question, scope: "category" as const }));
+  if (profile.category === "running-shoes") {
+    const universalByKey = new Map(universalQuestions.map((question) => [question.key, question]));
+    return [
+      universalByKey.get("category")!,
+      universalByKey.get("maxBudgetPaise")!,
+      runningShoeUseCaseQuestion,
+      ...categoryQuestions,
+      universalByKey.get("brandPreference")!,
+    ];
+  }
+  return [...universalQuestions, ...categoryQuestions];
 }
 
 const coveredAnswers: Partial<Record<ProductCategory, Record<string, Record<string, string>>>> = {
   phones: {
+    os: {
+      apple: "iOS",
+      iqoo: "Android",
+      oneplus: "Android",
+      nothing: "Android",
+      google: "Android",
+      samsung: "Android",
+      xiaomi: "Android",
+      poco: "Android",
+      realme: "Android",
+      vivo: "Android",
+      motorola: "Android",
+    },
     priority: {
       photography: "Camera",
       camera: "Camera",
+      gaming: "Performance",
       "long battery": "Battery",
       battery: "Battery",
     },
     size: { compact: "Compact" },
   },
   headphones: {
-    environment: { gaming: "Gaming" },
+    environment: {
+      travel: "Commute",
+      commute: "Commute",
+      work: "Office",
+      office: "Office",
+      fitness: "Gym",
+      gym: "Gym",
+      gaming: "Gaming",
+    },
     feature: {
       "noise cancellation": "Noise cancellation",
       "low latency": "Low latency",
@@ -65,7 +107,11 @@ export function resolveCoveredQuestions(profile: PreferenceProfile): PreferenceP
   if (!mappings) return profile;
 
   const next = structuredClone(profile);
-  const supplied = [profile.useCase, ...profile.mustHaves].filter((value): value is string => Boolean(value)).map(normalized);
+  if (profile.category === "phones" && !next.confirmedKeys.includes("brandPreference") && normalized(profile.answers.os ?? "") === "ios") {
+    next.brandPreference = "Apple";
+    next.confirmedKeys.push("brandPreference");
+  }
+  const supplied = [profile.brandPreference, profile.useCase, ...profile.mustHaves].filter((value): value is string => Boolean(value)).map(normalized);
   for (const [key, aliases] of Object.entries(mappings)) {
     if (next.confirmedKeys.includes(key)) continue;
     const answer = supplied.map((value) => aliases[value]).find(Boolean);
@@ -89,7 +135,7 @@ function normalized(value: string): string {
 }
 
 function isNeutralPreference(value: string): boolean {
-  return ["no preference", "either", "no deal-breakers", "none"].includes(normalized(value));
+  return ["no preference", "either", "no deal-breakers", "none", "not sure"].includes(normalized(value));
 }
 
 function tagMatches(tags: string[], value: string): boolean {
@@ -98,10 +144,49 @@ function tagMatches(tags: string[], value: string): boolean {
   return tags.some((tag) => normalized(tag).includes(target) || target.includes(normalized(tag)));
 }
 
+const runningShoeUseCaseTags: Record<string, string[]> = {
+  "daily training": ["everyday", "5-10 km", "balanced"],
+  fitness: ["everyday", "5-10 km", "10 km+", "performance"],
+  "long runs": ["10 km+"],
+  "speed / race day": ["race", "performance"],
+  "walking / casual": ["walking / casual"],
+};
+
+function preferenceMatches(product: Product, profile: PreferenceProfile, key: string, value: string): boolean {
+  if (profile.category === "running-shoes" && key === "useCase") {
+    const aliases = runningShoeUseCaseTags[normalized(value)];
+    return aliases?.some((alias) => tagMatches(product.tags, alias)) ?? tagMatches(product.tags, value);
+  }
+  return tagMatches(product.tags, value);
+}
+
+function satisfiesRunningShoeFit(product: Product, profile: PreferenceProfile): boolean {
+  if (profile.category !== "running-shoes") return true;
+  const terrain = normalized(profile.answers.terrain ?? "");
+  if (terrain === "road" && !tagMatches(product.tags, "road")) return false;
+  if (terrain === "trail" && !tagMatches(product.tags, "trail")) return false;
+  if (terrain === "mixed" && !tagMatches(product.tags, "mixed")) return false;
+  const support = normalized(profile.answers.support ?? "");
+  if (support === "neutral" && !tagMatches(product.tags, "neutral")) return false;
+  if (support === "extra stability" && !tagMatches(product.tags, "extra stability")) return false;
+  return true;
+}
+
 function chooseVariant(product: Product, profile: PreferenceProfile): ProductVariant | null {
   const requestedSize = profile.answers.size;
+  const hasSpecificVariant = requestedSize && /^uk\s+\d+(?:\.5)?$/i.test(requestedSize);
   const matching = requestedSize ? product.variants.find((item) => normalized(item.label) === normalized(requestedSize) && item.stock > 0) : undefined;
+  if (hasSpecificVariant) return matching ?? null;
   return matching ?? product.variants.find((item) => item.stock > 0) ?? null;
+}
+
+const exclusiveAnswerKeys = ["os", "formFactor", "connectivity"] as const;
+
+function satisfiesExclusiveAnswers(product: Product, profile: PreferenceProfile): boolean {
+  return exclusiveAnswerKeys.every((key) => {
+    const answer = profile.answers[key];
+    return !answer || isNeutralPreference(answer) || tagMatches(product.tags, answer);
+  });
 }
 
 interface ScoredProduct { product: Product; variant: ProductVariant; score: number; rankingScore: number; valueScore: number; matched: string[]; }
@@ -125,17 +210,17 @@ export function rankProducts(profile: PreferenceProfile, catalog: Product[]): Ra
   const mustHaves = profile.mustHaves.filter((item) => !["none", "no deal-breakers"].includes(normalized(item)));
   const hasBrandPreference = Boolean(profile.brandPreference && normalized(profile.brandPreference) !== "no preference");
 
-  const scoreProducts = (candidates: Product[]): ScoredProduct[] => candidates.filter((product) => product.kind === "primary" && product.category === profile.category).flatMap((product) => {
+  const scoreProducts = (candidates: Product[]): ScoredProduct[] => candidates.filter((product) => product.kind === "primary" && product.category === profile.category && satisfiesExclusiveAnswers(product, profile) && satisfiesRunningShoeFit(product, profile)).flatMap((product) => {
     const variant = chooseVariant(product, profile);
     if (!variant || variant.pricePaise > profile.maxBudgetPaise!) return [];
     if (mustHaves.some((need) => !tagMatches(product.tags, need))) return [];
     const matched: string[] = [];
     let score = 25;
-    if (profile.useCase && !isNeutralPreference(profile.useCase) && tagMatches(product.tags, profile.useCase)) { score += 18; matched.push(profile.useCase); }
+    if (profile.useCase && !isNeutralPreference(profile.useCase) && preferenceMatches(product, profile, "useCase", profile.useCase)) { score += profile.category === "running-shoes" ? 24 : 18; matched.push(profile.useCase); }
     if (hasBrandPreference && normalized(product.brand) === normalized(profile.brandPreference!)) { score += 10; matched.push(`${product.brand} preference`); }
     for (const [key, value] of Object.entries(profile.answers)) {
       if (isNeutralPreference(value)) continue;
-      if (tagMatches(product.tags, value) || normalized(variant.label) === normalized(value)) { score += categoryWeights.get(key) ?? 8; matched.push(value); }
+      if (preferenceMatches(product, profile, key, value) || normalized(variant.label) === normalized(value)) { score += categoryWeights.get(key) ?? 8; matched.push(value); }
     }
     if (mustHaves.length) { score += 20; matched.push(...mustHaves); }
     const tierScore = budgetTierScore(variant.pricePaise, profile.maxBudgetPaise!);
@@ -169,22 +254,84 @@ export function rankProducts(profile: PreferenceProfile, catalog: Product[]): Ra
   if (!scored.length) return { recommendations: [], brandFallback: false };
   const best = scored[0]!;
   const remaining = scored.slice(1);
-  const value = [...remaining].sort((a, b) => b.valueScore - a.valueScore || b.score - a.score)[0];
+  const shoeValueCandidates = remaining.filter((item) => item.score >= best.score - 12);
+  const value = profile.category === "running-shoes"
+    ? [...(shoeValueCandidates.length ? shoeValueCandidates : remaining)].sort((a, b) => a.variant.pricePaise - b.variant.pricePaise || b.score - a.score)[0]
+    : [...remaining].sort((a, b) => b.valueScore - a.valueScore || b.score - a.score)[0];
   const alternative = remaining.find((item) => item !== value);
   const selected = [best, value, alternative].filter((item): item is ScoredProduct => Boolean(item));
-  const labels: Recommendation["label"][] = ["Best fit", "Best value", "Alternative"];
+  const labels: Recommendation["label"][] = ["Best fit", "Best value", "Best alternative"];
   const recommendations = selected.map((item, index) => ({
     productId: item.product.id, variantId: item.variant.id, label: labels[index]!, fitScore: item.score,
     matchedNeeds: item.matched.length ? item.matched : ["Within budget", "Available now"],
     tradeoff: index === 0
-      ? "Prioritizes your strongest preferences without using the full budget by default."
+      ? profile.category === "running-shoes"
+        ? "Best overall fit for your surface, support need and preferred ride."
+        : "Prioritizes your strongest preferences without using the full budget by default."
       : index === 1
         ? `Leaves ₹${Math.round((profile.maxBudgetPaise! - item.variant.pricePaise) / 100).toLocaleString("en-IN")} in your budget while keeping a strong match.`
-        : "Offers a different balance of price and preferences.",
-    reason: `${item.product.name} matches ${item.matched.slice(0, 2).join(" and ") || "your budget and core use"}.`,
+        : profile.category === "running-shoes"
+          ? "A different training feel that still matches your surface and support needs."
+          : "Offers a different balance of price and preferences.",
+    reason: profile.category === "running-shoes"
+      ? `${item.product.name} matches your ${profile.answers.terrain?.toLowerCase() ?? "running"} use, ${profile.useCase?.toLowerCase() ?? "training goal"}, and ${profile.answers.cushioning?.toLowerCase() ?? "preferred"} ride in ${item.variant.label}.`
+      : `${item.product.name} matches ${item.matched.slice(0, 2).join(" and ") || "your budget and core use"}.`,
     promotionInfluencedTie: item.product.promoted && best.rankingScore === item.rankingScore,
   }));
   return { recommendations, brandFallback };
+}
+
+export interface NoMatchRecovery { key: string | null; prompt: string; }
+
+/** Finds the smallest confirmed constraint whose relaxation restores results. */
+export function noMatchRecovery(profile: PreferenceProfile, catalog: Product[], excludedKeys: ReadonlySet<string> = new Set()): NoMatchRecovery {
+  const hasResults = (candidate: PreferenceProfile) => rankProducts(candidate, catalog).recommendations.length > 0;
+  if (!excludedKeys.has("maxBudgetPaise") && profile.maxBudgetPaise && profile.maxBudgetPaise < 50_000_000) {
+    const relaxed = structuredClone(profile);
+    relaxed.maxBudgetPaise = 50_000_000;
+    if (hasResults(relaxed)) return { key: "maxBudgetPaise", prompt: "I couldn’t find an exact match within that budget. What’s the highest amount you’d be comfortable with?" };
+  }
+  if (!excludedKeys.has("mustHaves") && profile.mustHaves.length) {
+    const relaxed = structuredClone(profile);
+    relaxed.mustHaves = [];
+    if (hasResults(relaxed)) return { key: "mustHaves", prompt: "Your non-negotiables rule out every current option. Which requirement could you relax, or choose “No deal-breakers”?" };
+  }
+  if (profile.category === "running-shoes") {
+    const shoeRelaxations = [
+      { key: "support", neutralValue: "Not sure", prompt: "That support choice conflicts with your other shoe needs. Do neutral shoes work, or should I keep looking for extra stability?" },
+      { key: "terrain", neutralValue: null, prompt: "I don’t have a shoe that combines that surface with your other needs. Which surface should I prioritise instead?" },
+      { key: "cushioning", neutralValue: "No preference", prompt: "That ride feel rules out the remaining shoes. Which cushioning feel could you also consider?" },
+    ] as const;
+    for (const { key, neutralValue, prompt } of shoeRelaxations) {
+      if (excludedKeys.has(key)) continue;
+      const answer = profile.answers[key];
+      if (!answer || isNeutralPreference(answer)) continue;
+      const relaxed = structuredClone(profile);
+      if (neutralValue) relaxed.answers[key] = neutralValue;
+      else delete relaxed.answers[key];
+      if (hasResults(relaxed)) return { key, prompt };
+    }
+  }
+  for (const key of exclusiveAnswerKeys) {
+    if (excludedKeys.has(key)) continue;
+    const answer = profile.answers[key];
+    if (!answer || isNeutralPreference(answer)) continue;
+    const relaxed = structuredClone(profile);
+    relaxed.answers[key] = key === "connectivity" ? "Either" : "No preference";
+    if (hasResults(relaxed)) {
+      const question = allQuestions(profile).find((item) => item.key === key);
+      return { key, prompt: `Your ${answer} choice rules out every current option. ${question?.prompt ?? "What would you like to change?"}` };
+    }
+  }
+  if (!excludedKeys.has("size") && profile.category === "running-shoes" && profile.answers.size) {
+    const relaxed = structuredClone(profile);
+    delete relaxed.answers.size;
+    if (hasResults(relaxed)) return { key: "size", prompt: `I don’t have an in-stock match in ${profile.answers.size}. What other size should I check?` };
+  }
+  return {
+    key: null,
+    prompt: "I don’t have an exact match for that combination, and we’ve already checked the preferences most likely to unblock it. Start a new search, or tell me which preference you want to change.",
+  };
 }
 
 export function recommendedAddons(profile: PreferenceProfile, primary: Product, catalog: Product[]): Product[] {

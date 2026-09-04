@@ -1,6 +1,6 @@
 import type { CategoryProfile, Product, ProductCategory, ProductVariant } from "@/lib/types";
 
-export const CATALOG_VERSION = "choosy-catalog-2026-09-v3";
+export const CATALOG_VERSION = "choosy-catalog-2026-09-v8";
 export const CATALOG_PRICE_AS_OF = "2026-09-03";
 export const CATALOG_MARKET = "India";
 export const CATALOG_PRICE_NOTICE = "Real products with frozen Razorpay Test Mode prices; stock is simulated and prices are not live retail offers.";
@@ -17,11 +17,11 @@ export const CATEGORY_PROFILES: CategoryProfile[] = [
     { key: "feature", prompt: "Which feature matters most?", choices: ["Noise cancellation", "Low latency", "Call quality", "No preference"], required: true, weight: 18 },
     { key: "connectivity", prompt: "Wireless, wired, or either?", choices: ["Wireless", "Wired", "Either"], required: true, weight: 8 },
   ] },
-  { category: "running-shoes", label: "Running shoes", description: "Road and trail shoes for daily training and longer distances", version: "running-shoes-v2", questions: [
-    { key: "size", prompt: "What shoe size do you need?", choices: ["UK 7", "UK 8", "UK 9", "UK 10"], required: true, weight: 20 },
-    { key: "terrain", prompt: "Where do you usually run?", choices: ["Road", "Trail", "Mixed"], required: true, weight: 18 },
-    { key: "distance", prompt: "What does a typical run look like?", choices: ["Under 5 km", "5–10 km", "10 km+", "Walking / casual"], required: true, weight: 14 },
-    { key: "cushioning", prompt: "How should the ride feel?", choices: ["Soft", "Balanced", "Responsive", "No preference"], required: true, weight: 12 },
+  { category: "running-shoes", label: "Running shoes", description: "Road and trail shoes for daily training and longer distances", version: "running-shoes-v3", questions: [
+    { key: "size", prompt: "Which UK size should I check for stock?", choices: ["UK 5", "UK 5.5", "UK 6", "UK 6.5", "UK 7", "UK 7.5", "UK 8", "UK 8.5", "UK 9", "UK 9.5", "UK 10", "UK 10.5", "UK 11", "UK 11.5", "UK 12"], required: true, weight: 20 },
+    { key: "terrain", prompt: "Which surface will you run on most?", choices: ["Road", "Trail", "Mixed"], required: true, weight: 24 },
+    { key: "support", prompt: "Do neutral shoes work for you, or do you need extra stability?", choices: ["Neutral", "Extra stability", "Not sure"], required: true, weight: 22 },
+    { key: "cushioning", prompt: "What ride feel do you enjoy?", choices: ["Soft", "Balanced", "Responsive", "No preference"], required: true, weight: 16 },
   ] },
 ];
 
@@ -34,7 +34,26 @@ interface CatalogEvidence {
   popularitySignal: string;
 }
 
-const primary = (sku: string, category: ProductCategory, brand: string, name: string, price: number, tags: string[], description: string, imageUrl: string, catalogEvidence: CatalogEvidence, promoted = false, variants?: ProductVariant[]): Product => ({
+const STABILITY_SHOE_SKUS = new Set([
+  "SH-AS-KAY31",
+  "SH-NI-STR26",
+  "SH-KI-KS9S",
+  "SH-AD-SOL3",
+  "SH-SK-GRP2",
+  "SH-NB-860",
+  "SH-PM-FRN2",
+  "SH-BR-AD23",
+  "SH-HK-AR8",
+  "SH-SL-DRXG",
+]);
+
+function productTags(category: ProductCategory, sku: string, tags: string[]): string[] {
+  if (category !== "running-shoes") return tags;
+  const supportTag = STABILITY_SHOE_SKUS.has(sku) ? "extra stability" : "neutral";
+  return [...new Set([...tags, supportTag])];
+}
+
+const primary = (sku: string, category: ProductCategory, brand: string, name: string, price: number, tags: string[], description: string, imageUrl: string, catalogEvidence: CatalogEvidence, promoted = false, variants?: ProductVariant[], catalogImageUrl = `/products/real/${sku.toLowerCase()}.webp`): Product => ({
   id: `prod_${sku.toLowerCase()}`,
   sku,
   category,
@@ -42,9 +61,9 @@ const primary = (sku: string, category: ProductCategory, brand: string, name: st
   brand,
   name,
   description,
-  imageUrl: `/products/real/${sku.toLowerCase()}.webp`,
+  imageUrl: catalogImageUrl,
   promoted,
-  tags,
+  tags: productTags(category, sku, tags),
   attributes: {
     realProduct: true,
     catalogMode: "curated_snapshot",
@@ -76,7 +95,8 @@ const addon = (sku: string, category: ProductCategory, name: string, price: numb
   variants: [variant(`${sku}-STD`, "Standard", price, 20)],
 });
 
-const shoeVariants = (sku: string, price: number) => ["UK 7", "UK 8", "UK 9", "UK 10"].map((size) => variant(`${sku}-${size.replace(" ", "")}`, size, price, 6, { size }));
+const SHOE_SIZES = ["UK 5", "UK 5.5", "UK 6", "UK 6.5", "UK 7", "UK 7.5", "UK 8", "UK 8.5", "UK 9", "UK 9.5", "UK 10", "UK 10.5", "UK 11", "UK 11.5", "UK 12"];
+const shoeVariants = (sku: string, price: number) => SHOE_SIZES.map((size) => variant(`${sku}-${size.replace(" ", "")}`, size, price, 6, { size }));
 const evidence = (sourceUrl: string, priceKind: CatalogEvidence["priceKind"], segment: CatalogEvidence["segment"], popularitySignal: string): CatalogEvidence => ({ sourceUrl, priceKind, segment, popularitySignal });
 
 export const CURATED_CATALOG: Product[] = [
@@ -144,6 +164,30 @@ export const CURATED_CATALOG: Product[] = [
   primary("SH-HK-SG6", "running-shoes", "Hoka", "Hoka Speedgoat 6", 15_990, ["trail", "responsive", "balanced", "10 km+", "performance"], "A versatile trail shoe with Vibram Megagrip outsole and improved PROFLY+ midsole for technical terrain.", "https://img.hoka.com/is/image/hoka/1160016-CSMS_1?$pdp_1920x$&fmt=webp&qlt=90", evidence("https://www.hoka.com/en/in/speedgoat-6/", "retail_snapshot", "premium", "Hoka flagship trail shoe"), true, shoeVariants("SH-HK-SG6", 15_990)),
   primary("SH-AS-KAY31", "running-shoes", "ASICS", "ASICS Gel-Kayano 31", 16_999, ["road", "soft", "balanced", "10 km+", "performance"], "A premium stability shoe with PureGEL and 4D GUIDANCE SYSTEM for overpronation support on long runs.", "https://images.asics.com/is/image/asics/1011C026_001_SR_RT_GLB-1?$sfcc-product$", evidence("https://www.asics.com/in/gel-kayano-31/", "retail_snapshot", "premium", "ASICS flagship stability shoe"), false, shoeVariants("SH-AS-KAY31", 16_999)),
   primary("SH-AD-UB5", "running-shoes", "adidas", "adidas Ultraboost 5", 16_999, ["road", "soft", "balanced", "5\u201310 km", "10 km+", "everyday"], "A premium lifestyle-crossover runner with full-length BOOST cushioning and Primeknit+ upper.", "https://assetmanagerpim-res.cloudinary.com/images/w_1560/q_100/a5bfa4a45f4243889f3c3e21e07adb67_9366/ID3473_01_standard.WebP", evidence("https://www.adidas.co.in/ultraboost-5-shoes/ID3473.html", "official_mrp", "premium", "Iconic adidas Ultraboost series"), false, shoeVariants("SH-AD-UB5", 16_999)),
+
+  primary("SH-NI-RD", "running-shoes", "Nike", "Nike Run Defy", 3_995, ["road", "balanced", "under 5 km", "walking / casual", "everyday"], "An affordable road shoe with breathable mesh, flexible cushioning and dependable traction for short runs and everyday wear.", "https://static.nike.com/a/images/t_web_pw_592_v2/f_auto/ba2ab3da-0d91-4ebf-8dc0-b6e858b3bcd8/NIKE%2BRUN%2BDEFY.png", evidence("https://www.nike.com/in/w/nike-running-shoes-37v7jz7yfbzapms5zy7ok", "official_mrp", "budget", "Nike India road-running value option"), true, shoeVariants("SH-NI-RD", 3_995)),
+  primary("SH-NI-RS3", "running-shoes", "Nike", "Nike Run Swift 3", 6_295, ["road", "soft", "balanced", "under 5 km", "5–10 km", "walking / casual", "everyday"], "A supportive daily road shoe with a breathable mesh upper, Flywire lockdown and soft foam cushioning.", "https://static.nike.com/a/images/t_PDP_1728_v1/f_auto%2Cq_auto%3Aeco/7d3215e5-f431-4b02-8875-a069ca8acc87/NIKE%2BRUN%2BSWIFT%2B3.png", evidence("https://www.nike.com/in/w/nike-running-shoes-37v7jz7yfbzapms5zy7ok", "official_mrp", "value", "Nike India daily road trainer"), false, shoeVariants("SH-NI-RS3", 6_295)),
+  primary("SH-NI-JT3", "running-shoes", "Nike", "Nike Juniper Trail 3", 7_495, ["trail", "soft", "balanced", "5–10 km", "10 km+", "everyday"], "An accessible trail runner with a cushioned foam midsole and Trail ATC outsole for dependable grip on uneven ground.", "https://static.nike.com/a/images/t_web_pdp_535_v2/f_auto/2282853f-18f9-4ad4-90c2-89a9744d3ffe/NIKE%2BJUNIPER%2BTRAIL%2B3.png", evidence("https://www.nike.com/in/w/nike-running-shoes-37v7jz7yfbzapms5zy7ok", "official_mrp", "value", "Nike India accessible trail option"), false, shoeVariants("SH-NI-JT3", 7_495)),
+  primary("SH-PM-EN4", "running-shoes", "Puma", "Puma Electrify NITRO 4", 8_999, ["road", "responsive", "balanced", "5–10 km", "everyday"], "A responsive road trainer combining NITROFOAM in the heel, PROFOAMLITE cushioning and a grippy PUMAGRIP outsole.", "https://images.puma.com/image/upload/f_auto%2Cq_auto%2Cb_rgb%3Afafafa%2Cw_2000%2Ch_2000/global/310789/11/sv04/fnd/EEA/fmt/png/M%C4%99skie-buty-do-biegania-Electrify-NITRO%E2%84%A2-4", evidence("https://in.puma.com/in/en/sports/sports-running/nitro-collection", "official_price", "value", "Current PUMA India NITRO road trainer"), false, shoeVariants("SH-PM-EN4", 8_999)),
+  primary("SH-NI-STR26", "running-shoes", "Nike", "Nike Structure 26", 11_895, ["road", "soft", "responsive", "balanced", "5–10 km", "10 km+", "everyday"], "A stable daily road trainer with full-length ReactX cushioning and a midfoot support system for guided transitions.", "https://gazellesports.com/cdn/shop/files/AURORA_HJ1102-004_PHSLH000-2000_1946x.jpg?v=1753980345", evidence("https://www.nike.com/in/w/nike-1n3adz4g797z7yfbz8nb9w", "official_mrp", "midrange", "Current Nike supportive-cushioning model"), false, shoeVariants("SH-NI-STR26", 11_895)),
+  primary("SH-PM-FR3", "running-shoes", "Puma", "Puma Fast-R NITRO Elite 3", 23_999, ["road", "responsive", "10 km+", "performance", "race"], "An ultralight carbon-plated road racer with NITROFOAM ELITE cushioning built for fast 5K-to-marathon efforts.", "https://images.puma.net/images/312060/09/sv01/fnd/ARG/w/2000/h/2000/", evidence("https://in.puma.com/in/en/sports/sports-running/nitro-collection", "official_price", "flagship", "PUMA India flagship road-racing shoe"), true, shoeVariants("SH-PM-FR3", 23_999)),
+
+  primary("SH-KI-KS9S", "running-shoes", "KIPRUN", "KIPRUN KS900 Support", 8_999, ["road", "soft", "balanced", "5–10 km", "10 km+", "everyday"], "A cushioned road trainer with a wider support platform and MFOAM cushioning for runners who want added guidance on daily and long runs.", "https://contents.mediadecathlon.com/p2820068/k%245fb1691949f5124abda2f8b1c5d8c966/sepatu-lari-pria-ks900-support-hijau-toska-kiprun-8916978.jpg?f=1920x0&format=auto", evidence("https://www.decathlon.in/p/8916978/men-s-road-running-shoes-kiprun-ks900-support-green-turquoise", "official_price", "value", "Current Decathlon India support model"), true, shoeVariants("SH-KI-KS9S", 8_999)),
+  primary("SH-AD-SOL3", "running-shoes", "adidas", "adidas Supernova Solution 3", 10_499, ["road", "soft", "responsive", "balanced", "5–10 km", "10 km+", "everyday"], "A stable everyday road shoe with Dreamstrike+ cushioning and Guide Your Ride support for smoother midfoot transitions.", "https://assets.adidas.com/images/h_2000%2Cf_auto%2Cq_auto%2Cfl_lossy%2Cc_fill%2Cg_auto/a1dacf9454344edaa3aac2ae8e5cf07d_9366/SUPERNOVA_SOLUTION_3_RUNNING_SHOES_Blue_JR7399_01_00_standard.jpg", evidence("https://www.adidas.co.in/supernova-solution-3-running-shoes/JR7399.html", "official_price", "midrange", "Current adidas India stability trainer"), true, shoeVariants("SH-AD-SOL3", 10_499)),
+  primary("SH-SK-GRP2", "running-shoes", "Skechers", "Skechers GO RUN Persistence 2", 9_599, ["road", "responsive", "balanced", "5–10 km", "walking / casual", "everyday"], "A supportive Arch Fit road trainer with a carbon-infused forefoot winglet and HYPER ARC geometry for smooth daily miles.", "https://gambol.in/cdn/shop/files/3_ab8e4267-2e1e-4ca4-af00-3d066e70dbe1_1080x.jpg?v=1763810803", evidence("https://www.skechers.in/go-run-persistence-2/197976058040.html", "official_price", "value", "Current Skechers India Arch Fit running model"), false, shoeVariants("SH-SK-GRP2", 9_599)),
+  primary("SH-NB-860", "running-shoes", "New Balance", "New Balance Fresh Foam X 860v14", 11_999, ["road", "soft", "balanced", "5–10 km", "10 km+", "everyday"], "A durable stability trainer pairing Fresh Foam X cushioning with a Stability Plane for guided everyday and long-distance running.", "https://factoryshoeoutlet.ca/cdn/shop/files/M860W1401.webp?v=1764711143", evidence("https://gambol.in/products/new-balance-fresh-foam-x-860v14", "retail_snapshot", "midrange", "Established New Balance stability series"), false, shoeVariants("SH-NB-860", 11_999)),
+  primary("SH-PM-FRN2", "running-shoes", "Puma", "Puma ForeverRun NITRO 2", 11_249, ["road", "soft", "responsive", "balanced", "5–10 km", "10 km+", "everyday"], "A supportive road trainer with dual-density NITROFOAM, a broad platform and RUNGUIDE system for a smooth stable ride.", "https://images.puma.com/image/upload/f_auto%2Cq_auto%2Cb_rgb%3Afafafa%2Cw_2000%2Ch_2000/global/310109/24/sv01/fnd/IND/fmt/png/ForeverRun-NITRO%E2%84%A2-2-Men%27s-Road-Running-Shoes", evidence("https://in.puma.com/in/en/pd/foreverrun-nitro-2-mens-running-shoes/310109", "official_price", "midrange", "Current PUMA India stability trainer"), true, shoeVariants("SH-PM-FRN2", 11_249)),
+  primary("SH-BR-AD23", "running-shoes", "Brooks", "Brooks Adrenaline GTS 23", 8_999, ["road", "soft", "balanced", "5–10 km", "10 km+", "walking / casual", "everyday"], "A dependable support shoe using GuideRails technology to control excess movement while keeping daily road runs comfortably cushioned.", "https://brooksrunningindia.com/cdn/shop/files/110391_020_Z_Adrenaline_GTS_23.jpg?v=1715846373", evidence("https://brooksrunningindia.com/products/adrenaline-gts-23-mens-road-running-shoes", "official_price", "value", "Brooks India Adrenaline support series"), false, shoeVariants("SH-BR-AD23", 8_999)),
+  primary("SH-HK-AR8", "running-shoes", "Hoka", "Hoka Arahi 8", 15_990, ["road", "soft", "balanced", "5–10 km", "10 km+", "walking / casual", "everyday"], "A smooth max-cushion stability shoe with an H-Frame support system for guided road running and comfortable all-day wear.", "https://d2lfsu1qnyxzxu.cloudfront.net/product-media/1MUR/2000/2000/1168690-BKSK1.webp", evidence("https://www.hoka.com/en/us/mens-everyday-running-shoes/arahi-8/1168690.html", "retail_snapshot", "premium", "Current Hoka stability model"), true, shoeVariants("SH-HK-AR8", 15_990)),
+  primary("SH-SL-DRXG", "running-shoes", "Salomon", "Salomon DRX Defy GRVL", 13_999, ["road", "trail", "mixed", "responsive", "balanced", "5–10 km", "10 km+", "everyday"], "A road-to-gravel support shoe with activeCHASSIS guidance, responsive foam and mixed-surface Contagrip traction.", "https://salomon.jp/cdn/shop/files/L47809700_0_GHO_DRXDEFYGRVLWren_SpicyMustard_VanillaIce.png?v=1738050040&width=2000", evidence("https://www.salomon.com/en-us/product/drx-defy-grvl-li6257", "retail_snapshot", "midrange", "Salomon gravel support model"), true, shoeVariants("SH-SL-DRXG", 13_999)),
+
+  // The shared shoe fallback keeps each card resilient while the linked
+  // source image remains available as product evidence.
+  primary("SH-NI-DS13", "running-shoes", "Nike", "Nike Downshifter 13", 4_295, ["road", "soft", "balanced", "under 5 km", "walking / casual", "everyday"], "A breathable entry road runner with an internal fit band and soft foam cushioning for shorter runs and everyday miles.", "https://adn-static1.nykaa.com/nykdesignstudio-images/pub/media/catalog/product/a/d/ad22b92Nike-FD6454-003_1.jpg", evidence("https://www.nike.com/in/t/downshifter-13-road-running-shoes-4Gw85J", "official_mrp", "budget", "Nike India entry road-running model"), false, shoeVariants("SH-NI-DS13", 4_295), "/products/running-shoes.png"),
+  primary("SH-AD-GX7", "running-shoes", "adidas", "adidas Galaxy 7", 4_410, ["road", "soft", "balanced", "under 5 km", "walking / casual", "everyday"], "A Cloudfoam road shoe for comfortable everyday runs, walks and gym sessions.", "https://www.adidas.co.in/galaxy-7-running-shoes/ID8757.html", evidence("https://www.adidas.co.in/galaxy-7-running-shoes/ID8757.html", "official_price", "budget", "More than 3,500 adidas-store ratings"), false, shoeVariants("SH-AD-GX7", 4_410), "/products/running-shoes.png"),
+  primary("SH-PM-SCPH", "running-shoes", "Puma", "Puma Scend Pro HeatStride", 3_499, ["road", "responsive", "balanced", "under 5 km", "5–10 km", "everyday"], "A lightweight road runner with PROFOAM LITE cushioning, PROTREAD traction and a performance-focused fit.", "https://images.puma.com/image/upload/f_auto,q_auto,b_rgb:fafafa,w_2000,h_2000/global/311815/01/sv01/fnd/IND/fmt/png/Scend-Pro-HeatStride-Men%27s-Running-Shoes", evidence("https://in.puma.com/in/en/pd/scend-pro-heatstride-mens-running-shoes/311815", "official_price", "budget", "PUMA India road-running model"), false, shoeVariants("SH-PM-SCPH", 3_499), "/products/running-shoes.png"),
+  primary("SH-KI-KS9L", "running-shoes", "KIPRUN", "KIPRUN KS900 Light", 5_499, ["road", "soft", "responsive", "balanced", "5–10 km", "10 km+", "everyday"], "A lightweight, cushioned road trainer for regular training and longer distances.", "https://contents.mediadecathlon.com/p2644612/75ce16f605bd2a26a0f275b08d22c469/p2644612.jpg?format=auto&f=768x0", evidence("https://www.decathlon.in/p/8917144/kiprun-ks900-light-men-s-running-shoes-blue-green", "official_price", "value", "More than 2,900 Decathlon ratings"), false, shoeVariants("SH-KI-KS9L", 5_499), "/products/running-shoes.png"),
+  primary("SH-KL-JF190", "running-shoes", "Kalenji", "Kalenji Jogflow 190.1", 2_499, ["road", "soft", "balanced", "under 5 km", "5–10 km", "walking / casual", "everyday"], "A high-cushion, high-grip road shoe designed for up to 20 km of running per week.", "https://contents.mediadecathlon.com/p3105814/de73e373e9b5fae0216a06643787e502/p3105814.jpg?format=auto&f=768x0", evidence("https://www.decathlon.in/p/8874411_migration/men-running-shoes-superior-grip-cushioned-upto-20km-week-jogflow-190-1-black", "official_price", "budget", "More than 9,600 Decathlon ratings"), false, shoeVariants("SH-KL-JF190", 2_499), "/products/running-shoes.png"),
 
   addon("AC-P1", "phones", "30W compact charger", 1_499, ["phones", "battery", "charging"], "A generic demo charger used only to prove a relevant, budget-safe add-on."),
   addon("AC-P2", "phones", "Everyday protective case", 999, ["phones", "protection", "everyday"], "A generic demo case used only to prove a relevant, budget-safe add-on."),

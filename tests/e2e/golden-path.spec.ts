@@ -3,15 +3,29 @@ import { expect, test } from "@playwright/test";
 test("golden shopper input does not repeat known budget, use case, or brand", async ({ page }) => {
   await page.goto("/");
   await page.getByRole("button", { name: "A camera phone under ₹50,000" }).click();
-  await expect(page.getByText("Anything you definitely need—or want to avoid?")).toBeVisible();
+  await expect(page.getByText("Any features you definitely need?", { exact: false })).toBeVisible();
   await expect(page.getByText("What’s your maximum budget?")).toHaveCount(0);
   await expect(page.getByText("What will you use it for most?")).toHaveCount(0);
+});
+
+test("choosing Apple skips the redundant platform question", async ({ page }) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "Phone", exact: true }).click();
+  await page.getByRole("button", { name: "₹1,00,000", exact: true }).click();
+  await page.getByRole("button", { name: "Everyday", exact: true }).click();
+  await page.getByRole("button", { name: "Apple", exact: true }).click();
+  await expect(page.getByText("Apple phones use iOS, so I’ve skipped that question.", { exact: false })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Android", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "No deal-breakers", exact: true })).toBeVisible();
 });
 
 test("external buyer stops at an exact quote before checkout", async ({ page }) => {
   await page.goto("/agent-buyer");
   await page.getByRole("button", { name: "Find the best option" }).click();
   await expect(page.getByText("awaiting approval")).toBeVisible({ timeout: 12_000 });
+  const productImage = page.getByRole("img", { name: /product image/i }).first();
+  await expect(productImage).toBeVisible();
+  await expect.poll(async () => (await productImage.boundingBox())?.width ?? 0).toBeGreaterThanOrEqual(110);
   await expect(page.getByRole("heading", { name: "Nothing will be purchased yet." })).toBeVisible();
   await expect(page.getByRole("button", { name: "Approve this cart" })).toBeVisible();
   await expect(page.getByText("Your checkout is ready.")).toHaveCount(0);

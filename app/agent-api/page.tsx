@@ -63,7 +63,7 @@ export default function AgentApiPage() {
         <Link className="wordmark" href="/">choosy</Link>
         <nav>
           <Link href="/"><ArrowLeft size={14}/>Shop</Link>
-          <Link href="/agent-buyer">AI purchase demo</Link>
+          <Link href="/agent-buyer">Let AI do the work</Link>
           <Link href="/evidence">How we test</Link>
           <Link className="merchant-link" href="/merchant"><Lock size={14}/> Merchant dashboard</Link>
         </nav>
@@ -218,7 +218,7 @@ export default function AgentApiPage() {
 
       <footer className="api-footer">
         <span>Choosy developer API · {caps?.version ?? "loading"}</span>
-        <Link href="/agent-buyer">Try the AI purchase demo <ArrowRight size={13}/></Link>
+        <Link href="/agent-buyer">Let AI do the work <ArrowRight size={13}/></Link>
       </footer>
     </main>
   );

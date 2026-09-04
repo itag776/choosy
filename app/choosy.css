@@ -89,6 +89,38 @@ body {
   background: rgba(255, 255, 255, 0.92);
 }
 
+.shop-header .reset-session-button {
+  min-height: 36px;
+  padding: 8px 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  border: 1px solid rgba(43, 108, 246, 0.24);
+  border-radius: 999px;
+  background: #eef4ff;
+  color: #2458c6;
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+  transition: border-color 0.2s, background 0.2s, color 0.2s;
+}
+
+.shop-header .reset-session-button:hover:not(:disabled) {
+  border-color: #2b6cf6;
+  background: #2b6cf6;
+  color: #fff;
+}
+
+.shop-header .reset-session-button:focus-visible {
+  outline: 3px solid rgba(43, 108, 246, 0.24);
+  outline-offset: 2px;
+}
+
+.shop-header .reset-session-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.48;
+}
+
 .progress i,
 .message.user p,
 .composer button,

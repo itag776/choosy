@@ -6,7 +6,7 @@ import type { PreferenceProfile } from "@/lib/types";
 const cases: PreferenceProfile[]=[
   {category:"phones",maxBudgetPaise:50_000_00,useCase:"Photography",brandPreference:"No preference",mustHaves:["camera"],answers:{os:"Android",priority:"Camera",size:"Standard"},confirmedKeys:["category","maxBudgetPaise","useCase","brandPreference","mustHaves","os","priority","size"]},
   {category:"headphones",maxBudgetPaise:15_000_00,useCase:"Travel",brandPreference:"No preference",mustHaves:["noise cancellation"],answers:{formFactor:"Over-ear",environment:"Commute",feature:"Noise cancellation",connectivity:"Wireless"},confirmedKeys:["category","maxBudgetPaise","useCase","brandPreference","mustHaves","formFactor","environment","feature","connectivity"]},
-  {category:"running-shoes",maxBudgetPaise:9_000_00,useCase:"Fitness",brandPreference:"No preference",mustHaves:[],answers:{size:"UK 9",terrain:"Road",distance:"10 km+",cushioning:"Soft"},confirmedKeys:["category","maxBudgetPaise","useCase","brandPreference","mustHaves","size","terrain","distance","cushioning"]},
+  {category:"running-shoes",maxBudgetPaise:9_000_00,useCase:"Daily training",brandPreference:"No preference",mustHaves:[],answers:{size:"UK 9",terrain:"Road",support:"Neutral",cushioning:"Soft"},confirmedKeys:["category","maxBudgetPaise","useCase","brandPreference","size","terrain","support","cushioning"]},
 ];
 
 describe("Choosy release gates",()=>{

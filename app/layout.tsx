@@ -4,6 +4,7 @@ import "./choosy.css";
 import "./shopper-modern.css";
 import "./proof.css";
 import "./api-page.css";
+import "./loading.css";
 
 export const metadata: Metadata = {
   title: "Choosy — Shopping that listens",

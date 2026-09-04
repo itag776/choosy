@@ -7,7 +7,7 @@ describe("synthetic growth benchmark", () => {
     const first = runGrowthBenchmark(new Date("2026-09-03T00:00:00.000Z"));
     const second = runGrowthBenchmark(new Date("2026-09-03T00:00:00.000Z"));
     expect(second).toEqual(first);
-    expect(first.fixtureDigest).toBe("3f4f0b1866f0af881a6799ed35a6fed12d48ff34600af45f481554c0f64707e2");
+    expect(first.fixtureDigest).toBe("3768666145d426d5317c2c16ad0351301b410884497968e644e1f2cbd7bfb2c4");
   });
 
   it("passes the honest growth and safety gates", () => {

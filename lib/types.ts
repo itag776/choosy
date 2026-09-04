@@ -65,7 +65,7 @@ export interface Product {
 export interface Recommendation {
   productId: string;
   variantId: string;
-  label: "Best fit" | "Best value" | "Alternative";
+  label: "Best fit" | "Best value" | "Best alternative";
   fitScore: number;
   matchedNeeds: string[];
   tradeoff: string;

@@ -19,7 +19,7 @@ const categoryChoices: Record<ProductCategory, Record<string, string[]>> = {
     mustHaves: ["No deal-breakers", "Noise cancellation", "Low latency"],
   },
   "running-shoes": {
-    useCase: ["Everyday", "Fitness"],
+    useCase: ["Daily training", "Long runs", "Speed / race day", "Walking / casual"],
     mustHaves: ["No deal-breakers", "Soft cushioning"],
   },
 };

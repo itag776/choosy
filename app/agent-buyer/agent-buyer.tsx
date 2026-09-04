@@ -1,10 +1,13 @@
 "use client";
 import { useEffect, useState, type FormEvent } from "react";
+import Image from "next/image";
 import Link from "next/link";
 import { ArrowLeft, ArrowRight, Bot, Check, ExternalLink, LoaderCircle, ShieldCheck } from "lucide-react";
+import { DEMO_CATALOG } from "@/lib/catalog";
 import type { BuyerRun } from "@/lib/types";
 
 const DEMO_GOAL = "Buy the best Android camera phone under ₹50,000 and add protection if the total remains within budget.";
+const catalogById = new Map(DEMO_CATALOG.map((product) => [product.id, product]));
 function inr(value: number) { return `₹${Math.round(value / 100).toLocaleString("en-IN")}`; }
 
 export default function AgentBuyer({ initialRunId, returnedFromPayment = false }: { initialRunId?: string; returnedFromPayment?: boolean }) {
@@ -62,7 +65,7 @@ export default function AgentBuyer({ initialRunId, returnedFromPayment = false }
         {busy && !run && <div className="buyer-empty"><div><LoaderCircle className="spin" size={32}/><h2>Choosy is comparing options…</h2></div></div>}
         {run && <>
           <header><p className="eyebrow">Your plan</p><span className="buyer-status">{run.status.replaceAll("_", " ")}</span></header>
-          {run.proposal && run.quote && <section className="proposal-card"><header><div><p className="eyebrow">Best match</p><h2>{run.proposal.summary}</h2><p>{run.proposal.reason}</p></div><ShieldCheck/></header>{run.proposal.items.map((item) => <div className="proposal-line" key={item.productId}><span><b>{item.name}</b><small>{item.kind}</small></span><b>{inr(item.unitPricePaise)}</b></div>)}<div className="proposal-total"><span>Total</span><strong>{inr(run.proposal.totalPaise)}</strong></div><p><b>Worth knowing:</b> {run.proposal.tradeoff}</p></section>}
+          {run.proposal && run.quote && <section className="proposal-card"><header><div><p className="eyebrow">Best match</p><h2>{run.proposal.summary}</h2><p>{run.proposal.reason}</p></div><ShieldCheck/></header>{run.proposal.items.map((item) => { const catalogItem = catalogById.get(item.productId); return <div className="proposal-line" key={item.productId}><div className="proposal-item">{catalogItem && <span className={`proposal-image proposal-image-${catalogItem.category}`}><Image src={catalogItem.imageUrl} alt={`${catalogItem.name} product image`} width={124} height={104} sizes="(max-width: 540px) 84px, 124px"/></span>}<span><b>{item.name}</b><small>{item.kind}</small></span></div><b>{inr(item.unitPricePaise)}</b></div>; })}<div className="proposal-total"><span>Total</span><strong>{inr(run.proposal.totalPaise)}</strong></div><p><b>Worth knowing:</b> {run.proposal.tradeoff}</p></section>}
           {run.status === "awaiting_approval" && run.quote && <section className="approval-card"><p className="eyebrow">Your approval is required</p><h2>Nothing will be purchased yet.</h2><p>Confirm these items and the total. Price and stock will be checked once more before checkout.</p><button onClick={approve} disabled={busy}>{busy ? <LoaderCircle className="spin" size={16}/> : <ShieldCheck size={16}/>} Approve this cart</button></section>}
           {run.status === "checkout_ready" && run.checkout?.shortUrl && <section className="paid-proof">{returnedFromPayment ? <LoaderCircle className="spin"/> : <Check/>}<h2>{returnedFromPayment ? "Checking your payment…" : "Your checkout is ready."}</h2><p>{returnedFromPayment ? "This page will update when Razorpay confirms the payment." : "Review the final items and total on Razorpay before paying."}</p><a href={run.checkout.shortUrl}>Open Razorpay <ExternalLink size={15}/></a></section>}
           {run.status === "paid" && <section className="paid-proof"><Check/><h2>Payment confirmed.</h2><p>Razorpay confirmed this test payment.</p><Link href="/merchant">View the audit trail <ArrowRight size={14}/></Link></section>}

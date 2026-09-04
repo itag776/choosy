@@ -24,13 +24,13 @@ const profiles: BenchmarkArchetype[] = [
   headphones("travel-value", 15_000, "Travel", ["Noise cancellation"], { formFactor: "Over-ear", environment: "Commute", feature: "Noise cancellation", connectivity: "Wireless" }, ["noise cancellation"], "protection"),
   headphones("wired-gaming", 6_000, "Gaming", ["Low latency"], { formFactor: "Earbuds", environment: "Gaming", feature: "Low latency", connectivity: "Wired" }, ["wired", "low latency"], "earbuds"),
   headphones("premium-office", 18_000, "Work", [], { formFactor: "Over-ear", environment: "Office", feature: "Call quality", connectivity: "Wireless" }, ["office", "call quality"], "protection"),
-  shoes("soft-road", 10_000, ["Soft cushioning"], { size: "UK 9", terrain: "Road", distance: "10 km+", cushioning: "Soft" }, ["road", "soft"], "road"),
-  shoes("trail-distance", 9_000, [], { size: "UK 8", terrain: "Trail", distance: "10 km+", cushioning: "Balanced" }, ["trail", "10 km+"], "trail"),
-  shoes("mixed-daily", 8_000, [], { size: "UK 10", terrain: "Mixed", distance: "5–10 km", cushioning: "Balanced" }, ["mixed"], "safety"),
-  shoes("road-tempo", 10_000, [], { size: "UK 7", terrain: "Road", distance: "10 km+", cushioning: "Responsive" }, ["responsive", "10 km+"], "road"),
-  shoes("short-soft", 6_000, ["Soft cushioning"], { size: "UK 9", terrain: "Road", distance: "Under 5 km", cushioning: "Soft" }, ["soft", "under 5 km"], "road"),
-  shoes("balanced-5k", 7_000, [], { size: "UK 8", terrain: "Road", distance: "5–10 km", cushioning: "Balanced" }, ["road", "balanced"], "safety"),
-  shoes("trail-balanced", 8_500, [], { size: "UK 10", terrain: "Trail", distance: "5–10 km", cushioning: "Balanced" }, ["trail", "balanced"], "trail"),
+  shoes("soft-road", 10_000, "Long runs", ["Soft cushioning"], { size: "UK 9", terrain: "Road", support: "Neutral", cushioning: "Soft" }, ["road", "soft"], "road"),
+  shoes("trail-distance", 9_000, "Long runs", [], { size: "UK 8", terrain: "Trail", support: "Neutral", cushioning: "Balanced" }, ["trail", "10 km+"], "trail"),
+  shoes("mixed-daily", 8_000, "Daily training", [], { size: "UK 10", terrain: "Mixed", support: "Neutral", cushioning: "Balanced" }, ["mixed"], "safety"),
+  shoes("road-tempo", 10_000, "Speed / race day", [], { size: "UK 7", terrain: "Road", support: "Neutral", cushioning: "Responsive" }, ["responsive"], "road"),
+  shoes("short-soft", 6_000, "Walking / casual", ["Soft cushioning"], { size: "UK 9", terrain: "Road", support: "Neutral", cushioning: "Soft" }, ["soft", "walking / casual"], "road"),
+  shoes("balanced-5k", 7_000, "Daily training", [], { size: "UK 8", terrain: "Road", support: "Neutral", cushioning: "Balanced" }, ["road", "balanced"], "safety"),
+  shoes("trail-balanced", 8_500, "Daily training", [], { size: "UK 10", terrain: "Trail", support: "Neutral", cushioning: "Balanced" }, ["trail", "balanced"], "trail"),
 ];
 
 function complete(category: ProductCategory, budgetRupees: number, useCase: string, mustHaves: string[], answers: Record<string, string>): PreferenceProfile {
@@ -38,7 +38,7 @@ function complete(category: ProductCategory, budgetRupees: number, useCase: stri
 }
 function phone(id: string, budget: number, useCase: string, must: string[], answers: Record<string, string>, requiredTags: string[], addonNeed: string): BenchmarkArchetype { return { id, profile: complete("phones", budget, useCase, must, answers), requiredTags, addonNeed }; }
 function headphones(id: string, budget: number, useCase: string, must: string[], answers: Record<string, string>, requiredTags: string[], addonNeed: string): BenchmarkArchetype { return { id, profile: complete("headphones", budget, useCase, must, answers), requiredTags, addonNeed }; }
-function shoes(id: string, budget: number, must: string[], answers: Record<string, string>, requiredTags: string[], addonNeed: string): BenchmarkArchetype { return { id, profile: complete("running-shoes", budget, "Fitness", must, answers), requiredTags, addonNeed }; }
+function shoes(id: string, budget: number, useCase: string, must: string[], answers: Record<string, string>, requiredTags: string[], addonNeed: string): BenchmarkArchetype { return { id, profile: complete("running-shoes", budget, useCase, must, answers), requiredTags, addonNeed }; }
 
 export const GROWTH_BENCHMARK_SCENARIOS = profiles.flatMap((scenario) => Array.from({ length: 5 }, (_, index) => ({ ...scenario, id: `${scenario.id}-${index + 1}` })));
 
